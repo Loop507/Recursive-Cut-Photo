@@ -107,20 +107,22 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
         def pick(prob):
             return m_img if (m_img is not None and random.random() < prob) else active_pool_img
 
+        # --- LOGICA GEOMETRIE CORRETTA --- 
+        
         # 1. NESSUNO (STUTTER)
         if orientation == "Nessuno (Foto Intere)":
             target = pick(magnet_prob)
             shift = int(random.uniform(-400, 400) * val * dist_mult)
             frame = np.roll(target, shift, axis=1)
         
-        # 2. MOSAICO (Griglia statica)
+        # 2. MOSAICO (Griglia statica di foto diverse)
         elif orientation == "Mosaico":
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
                     target = pick(magnet_prob)
                     frame[bh[0]:bh[1], bv[0]:bv[1]] = target[bh[0]:bh[1], bv[0]:bv[1]]
         
-        # 3. MIX (H+V) - Tagli incrociati NON sovrapposti
+        # 3. MIX (H+V) - Tagli incrociati NON sovrapposti per ogni cella
         elif orientation == "Mix (H+V)":
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
@@ -133,14 +135,14 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
                         line_v = np.roll(target[:, bv[0]:bv[1]], shift, axis=0)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
 
-        # 4. ORIZZONTALE / VERTICALE (Tagli a strisce piene dal Codice 6.0)
+        # 4. ORIZZONTALE / VERTICALE (Ripristino logica strisce intere Codice 6) [cite: 4]
         else:
             if orientation == "Orizzontale":
                 for start, end in curr_bounds_h:
                     target = pick(magnet_prob)
                     shift = int(random.uniform(-350, 350) * val * dist_mult)
                     frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
-            else: # Verticale
+            elif orientation == "Verticale":
                 for start, end in curr_bounds_v:
                     target = pick(magnet_prob)
                     shift = int(random.uniform(-350, 350) * val * dist_mult)
@@ -153,6 +155,7 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
     clip = ImageSequenceClip(final_frames, fps=fps)
     if up_aud:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t_aud:
+            up_aud.seek(0)
             t_aud.write(up_aud.read()); aud_path = t_aud.name
         clip = clip.set_audio(AudioFileClip(aud_path).subclip(0, min(AudioFileClip(aud_path).duration, max_limit)))
     
