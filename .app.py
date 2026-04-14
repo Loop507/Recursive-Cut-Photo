@@ -123,25 +123,31 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
                 frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
 
         elif orientation == "Mosaico":
-            for bh in curr_bounds_h:
-                for bv in curr_bounds_v:
-                    target = pick()
-                    # Ogni cella prende un'immagine diversa, nessuno shift → puro collage
-                    frame[bh[0]:bh[1], bv[0]:bv[1]] = target[bh[0]:bh[1], bv[0]:bv[1]]
-
-        elif orientation == "Mix (H+V)":
+            # Griglia di celle: ogni cella shifta sull'intera riga o colonna poi ritaglia
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
                     target = pick()
                     shift = int(random.uniform(-400, 400) * val * dist_mult)
                     if random.random() > 0.5:
-                        # Shift sull'intera riga, poi ritaglia la fetta bv → striscia che sfora
                         line_h = np.roll(target[bh[0]:bh[1], :], shift, axis=1)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_h[:, bv[0]:bv[1]]
                     else:
-                        # Shift sull'intera colonna, poi ritaglia la fetta bh → colonna che sfora
                         line_v = np.roll(target[:, bv[0]:bv[1]], shift, axis=0)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
+
+        elif orientation == "Mix (H+V)":
+            # Prima passata: strisce orizzontali (come Orizzontale)
+            for start, end in curr_bounds_h:
+                if random.random() > 0.5:
+                    target = pick()
+                    shift = int(random.uniform(-500, 500) * val * dist_mult)
+                    frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
+            # Seconda passata: strisce verticali (come Verticale) si intrecciano sopra
+            for start, end in curr_bounds_v:
+                if random.random() > 0.5:
+                    target = pick()
+                    shift = int(random.uniform(-500, 500) * val * dist_mult)
+                    frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
         else:
             frame = pick()
 
