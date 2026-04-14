@@ -75,7 +75,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         rms_norm = rms / (rms.max() + 1e-6)
         audio_envelope = np.interp(np.linspace(0, len(rms_norm)-1, total_f), np.arange(len(rms_norm)), rms_norm)
 
-    # Inizializzazione confini (Logica V5.0)
+    # Inizializzazione confini stile v5.0
     curr_bounds_h = get_bounds(h)
     curr_bounds_v = get_bounds(w)
 
@@ -85,7 +85,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         prog_bar.progress(f / total_f)
         status_text.text(f"🚀 Rendering: {f}/{total_f}")
         
-        # Ricalcolo griglia ogni 2 frame se Random (Logica V5.0)
+        # Logica di ricalcolo dinamico v5.0
         if rand_lines and f % 2 == 0:
             curr_bounds_h = get_bounds(h)
             curr_bounds_v = get_bounds(w)
@@ -95,7 +95,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         val = (k_p['sv'] + (f/(total_f/2))*(k_p['pv']-k_p['sv']))/100 if curr_s <= mid else (k_p['pv'] + ((curr_s-mid)/mid)*(k_p['ev']-k_p['pv']))/100
         val *= audio_envelope[f]
         
-        # MAGNETISMO (I 3 COMANDANTI)
+        # MAGNETISMO
         magnet_prob = 0.0
         dist_mult = 1.0 
         if m_img is not None and curr_s > o_p['start_fade']:
@@ -113,26 +113,28 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         def pick():
             return m_img if (m_img is not None and random.random() < magnet_prob) else active_pool_img
 
-        # --- CHIRURGIA: EFFETTI DA V5.0 ---
+        # --- CHIRURGIA: INTEGRAZIONE LOGICA v5.0 ---
         
         if orientation == "Mosaico":
+            # Logica v5.0 pura: riempimento griglia a tasselli
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
                     target = pick()
-                    # Mosaico V5.0: Quadratini senza shift interno
                     frame[bh[0]:bh[1], bv[0]:bv[1]] = target[bh[0]:bh[1], bv[0]:bv[1]]
 
-        elif orientation == "Orizzontale" or orientation == "Verticale":
-            target_bounds = curr_bounds_h if orientation == "Orizzontale" else curr_bounds_v
-            for start, end in target_bounds:
+        elif orientation == "Orizzontale":
+            # Logica v5.0: roll sull'asse 1 (X) per strisce intere
+            for start, end in curr_bounds_h:
                 target = pick()
                 shift = int(random.uniform(-400, 400) * val * dist_mult)
-                if orientation == "Orizzontale":
-                    # Riga intera (Logica V5.0)
-                    frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
-                else:
-                    # Colonna intera (Logica V5.0)
-                    frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
+                frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
+
+        elif orientation == "Verticale":
+            # Logica v5.0: roll sull'asse 0 (Y) per strisce intere
+            for start, end in curr_bounds_v:
+                target = pick()
+                shift = int(random.uniform(-400, 400) * val * dist_mult)
+                frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
 
         elif orientation == "Mix (H+V)":
             for bh in curr_bounds_h:
@@ -145,8 +147,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
                     else:
                         line_v = np.roll(target[:, bv[0]:bv[1]], shift, axis=0)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
-        
-        else: # Foto Intere (Nessuno)
+        else:
             target = pick()
             shift = int(random.uniform(-400, 400) * val * dist_mult)
             frame = np.roll(target, shift, axis=1)
@@ -163,7 +164,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="8000k", logger=None)
     
-    # --- REPORT RICCHISSIMO ---
+    # --- REPORT FORMATTATO ---
     report_text = f"""--- LOOP507 REPORT ---
 
 [ PROGETTO ]
@@ -180,7 +181,7 @@ Audio: {a_info['active']}
 [ EFFETTI ]
 Geometria: {orientation}
 Spessore Base Strisce: {strand_val}px
-Dimensioni Random (V5.0 core): {"Si" if rand_lines else "No"}
+Dimensioni Random: {"Si" if rand_lines else "No"}
 Velocita Cambio Foto: {photo_speed} fps
 
 [ POTENZA ]
@@ -201,7 +202,7 @@ Magnetismo Finale: {o_p['final_v']}%
 # --- INTERFACCIA STREAMLIT ---
 if 'v_p' not in st.session_state: st.session_state.v_p, st.session_state.r_p = None, None
 
-st.title("Recursive Cut Pro 11.2 🚀")
+st.title("Recursive Cut Pro 11.4 🚀")
 col1, col2, col3 = st.columns([1, 1.2, 1])
 
 with col1:
@@ -245,5 +246,5 @@ with col3:
 
     if st.session_state.v_p:
         st.video(st.session_state.v_p)
-        st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_11_2.mp4")
-        st.download_button("📄 REPORT", open(st.session_state.r_p, "rb"), "report_11_2.txt")
+        st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_11_4.mp4")
+        st.download_button("📄 REPORT", open(st.session_state.r_p, "rb"), "report_11_4.txt")
