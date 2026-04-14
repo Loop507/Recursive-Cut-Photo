@@ -64,7 +64,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
             curr += s_w
         return b
 
-    # --- FIX 2: CARICAMENTO AUDIO UNA VOLTA SOLA ---
+    # --- FIX 2: CARICAMENTO AUDIO OTTIMIZZATO ---
     audio_envelope = np.ones(total_f)
     a_info = {"min": 0.0, "max": 0.0, "mean": 0.0, "active": "No"}
     temp_aud_path = None
@@ -75,19 +75,17 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
             t_aud.write(up_aud.read())
             temp_aud_path = t_aud.name
         
-        # Analisi leggera (sr=22050 consuma meno RAM di sr=None)
         y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
         rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
         a_info = {"min": float(rms.min()), "max": float(rms.max()), "mean": float(rms.mean()), "active": "Si (audio-reactive attivo)"}
         rms_norm = rms / (rms.max() + 1e-6)
         audio_envelope = np.interp(np.linspace(0, len(rms_norm)-1, total_f), np.arange(len(rms_norm)), rms_norm)
 
-    # --- FIX 1: GENERATORE DI FRAME (NESSUNA LISTA) ---
+    # --- FIX 1: GENERATORE DI FRAME (MEMORIA COSTANTE) ---
     def make_frame(t):
         f = int(t * fps)
         if f >= total_f: f = total_f - 1
         
-        # Aggiornamento UI
         prog_bar.progress(f / total_f)
         status_text.text(f"🚀 Rendering: {f}/{total_f}")
 
@@ -97,11 +95,9 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         curr_s = t
         mid = max_limit / 2
         
-        # Potenza calcolata sul frame corrente
         val = (k_p['sv'] + (f/(total_f/2))*(k_p['pv']-k_p['sv']))/100 if curr_s <= mid else (k_p['pv'] + ((curr_s-mid)/mid)*(k_p['ev']-k_p['pv']))/100
         val *= audio_envelope[f]
         
-        # Magnetismo
         magnet_prob = 0.0
         dist_mult = 1.0 
         if m_img is not None and curr_s > o_p['start_fade']:
@@ -119,7 +115,6 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         def pick():
             return m_img if (m_img is not None and random.random() < magnet_prob) else active_pool_img
 
-        # --- LOGICA GEOMETRIE ---
         if orientation == "Orizzontale":
             for start, end in curr_bounds_h:
                 target = pick()
@@ -158,7 +153,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
 
         return frame
 
-    # --- GENERAZIONE FINALE ---
+    # --- GENERAZIONE ---
     clip = VideoClip(make_frame, duration=max_limit)
     
     if temp_aud_path:
@@ -166,24 +161,20 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         clip = clip.set_audio(audio_clip)
     
     v_out = tempfile.mktemp(suffix=".mp4")
-    # Bitrate leggermente abbassato per stabilità (6000k è ottimo)
-    clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="6000k", logger=None)
+    clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
     
-    # Pulizia memoria e file
     clip.close()
     if up_aud: audio_clip.close()
     if temp_aud_path and os.path.exists(temp_aud_path): os.remove(temp_aud_path)
     gc.collect()
 
-    # --- REPORT ---
-    report_text = f"--- LOOP507 REPORT ---\n\n[ PROGETTO ]\nDurata: {max_limit} sec | Frame: {total_f} | FPS: {fps}\nFormato: {format_type}\n\n[ ASSETS ]\nFoto Master: {m_name}\nFoto nel Calderone: {t_count}\nMaster nel Calderone: {'Si' if inc_master else 'No'}\nAudio: {a_info['active']}\n  Ampiezza min: {a_info['min']:.2f} | max: {a_info['max']:.2f} | media: {a_info['mean']:.2f}\n\n[ EFFETTI ]\nGeometria: {orientation}\nSpessore Base Strisce: {strand_val}px\nDimensioni Random: {'Si' if rand_lines else 'No'}\nVelocita Cambio Foto: {photo_speed} fps\n\n[ POTENZA ]\nStart Power: {k_p['sv']} | Peak Power: {k_p['pv']} | End Power: {k_p['ev']}\nCaos -> Ordine: {chaos_val}/100\n\n[ MAGNETISMO ]\nInizio Snap: {o_p['start_fade']} sec\nMagnetismo Finale: {o_p['final_v']}%\n\n--- generato da Recursive Cut Pro - Loop507 ---"
-    
+    report_text = f"--- LOOP507 REPORT ---\n\nDurata: {max_limit} sec\nFormato: {format_type}\nAudio: {a_info['active']}\nGeometria: {orientation}\n---"
     r_out = tempfile.mktemp(suffix=".txt")
     with open(r_out, "w") as f_rep: f_rep.write(report_text)
     
     return v_out, r_out
 
-# --- INTERFACCIA (RESTATA UGUALE) ---
+# --- INTERFACCIA ---
 if 'v_p' not in st.session_state: st.session_state.v_p, st.session_state.r_p = None, None
 
 st.title("Recursive Cut Pro 7.8 🚀")
@@ -220,7 +211,7 @@ with col2:
 with col3:
     st.subheader("🎬 Export")
     fmt = st.selectbox("Formato", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
-    dur = st.number_input("Durata (sec)", 1, 120, 10) # Alzato il limite a 120 visto che ora è stabile
+    dur = st.number_input("Durata (sec)", 1, 120, 10)
     
     if st.button("🚀 GENERA VIDEO"):
         if up_m or up_t:
@@ -231,5 +222,3 @@ with col3:
     if st.session_state.v_p:
         st.video(st.session_state.v_p)
         st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_78.mp4")
-        st.download_button("📄 REPORT", open(st.session_state.r_p, "rb"), "report_78.txt")
-```
