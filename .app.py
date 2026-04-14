@@ -9,11 +9,11 @@ from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
 
 st.set_page_config(page_title="Recursive Cut Pro - Loop507", layout="wide")
 
-# --- CARICA IMMAGINE SENZA RESIZE ---
+# --- LOAD IMAGE (NO RESIZE) ---
 def load_image(img_file):
     return np.array(Image.open(img_file).convert("RGB"))
 
-# --- RENDER STREAM (AUDIO DIRETTO) ---
+# --- STREAM RENDER ---
 def render_video_stream(frame_func, w, h, fps, total_f, audio_path=None):
 
     output_path = tempfile.mktemp(suffix=".mp4")
@@ -24,7 +24,7 @@ def render_video_stream(frame_func, w, h, fps, total_f, audio_path=None):
         fps=fps,
         codec="libx264",
         bitrate="4000k",
-        audiofile=audio_path  # 🔥 audio integrato subito
+        audiofile=audio_path
     )
 
     for f in range(total_f):
@@ -35,15 +35,19 @@ def render_video_stream(frame_func, w, h, fps, total_f, audio_path=None):
     return output_path
 
 
-# --- GENERATORE PRINCIPALE ---
-def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
-                    max_limit, k_p, o_p, inc_master,
-                    rand_lines, photo_speed):
+# --- MAIN GENERATOR ---
+def generate_master(
+    up_master, up_trit, up_aud,
+    orientation, strand_val,
+    max_limit, k_p, o_p,
+    inc_master, rand_lines,
+    photo_speed, chaos_val
+):
 
     fps = 20
     total_f = int(max_limit * fps)
 
-    # --- IMMAGINI ---
+    # --- IMAGES ---
     m_img = load_image(up_master) if up_master else None
 
     if up_trit:
@@ -55,10 +59,9 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
     if m_img is not None and inc_master:
         pool_imgs.append(m_img)
 
-    # 🔥 usa dimensione originale
     h, w = pool_imgs[0].shape[:2]
 
-    # --- BOUNDS ---
+    # --- SLIDE STRUTTURE PERSISTENTI ---
     def get_bounds(max_dim):
         b = []
         curr = 0
@@ -69,6 +72,9 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
             b.append((curr, int(curr + s_w)))
             curr += s_w
         return b
+
+    bounds_h = get_bounds(h)
+    bounds_v = get_bounds(w)
 
     # --- AUDIO ---
     audio_envelope = np.ones(total_f)
@@ -93,9 +99,6 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
     # --- FRAME GENERATOR ---
     def generate_frame(f):
 
-        curr_bounds_h = get_bounds(h)
-        curr_bounds_v = get_bounds(w)
-
         curr_s = f / fps
         mid = max_limit / 2
 
@@ -118,16 +121,18 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
         def pick():
             return m_img if (m_img is not None and random.random() < magnet_prob) else active_img
 
+        base_shift = int(np.sin(f * 0.1) * 300 * val * dist_mult)
+
         if orientation == "Orizzontale":
-            for start, end in curr_bounds_h:
+            for i, (start, end) in enumerate(bounds_h):
                 target = pick()
-                shift = int(random.uniform(-500, 500) * val * dist_mult)
+                shift = base_shift + int(i * chaos_val * val)
                 frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
 
         elif orientation == "Verticale":
-            for start, end in curr_bounds_v:
+            for i, (start, end) in enumerate(bounds_v):
                 target = pick()
-                shift = int(random.uniform(-500, 500) * val * dist_mult)
+                shift = base_shift + int(i * chaos_val * val)
                 frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
 
         else:
@@ -147,16 +152,37 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
     return video_path
 
 
-# --- UI ---
+# ================= UI COMPLETA =================
+
 st.title("Recursive Cut Pro 🚀")
 
-up_m = st.file_uploader("FOTO MASTER", type=["jpg","png"])
-up_t = st.file_uploader("CALDERONE", type=["jpg","png"], accept_multiple_files=True)
-up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
+col1, col2 = st.columns(2)
 
-dur = st.slider("Durata", 1, 30, 10)
-orientation = st.selectbox("Geometria", ["Orizzontale","Verticale"])
-lines = st.slider("Spessore linee", 5, 200, 40)
+with col1:
+    up_m = st.file_uploader("FOTO MASTER", type=["jpg","png"])
+    up_t = st.file_uploader("CALDERONE", type=["jpg","png"], accept_multiple_files=True)
+    up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
+
+with col2:
+    orientation = st.selectbox("Geometria", ["Orizzontale","Verticale","Full"])
+    dur = st.slider("Durata", 1, 30, 10)
+    lines = st.slider("Spessore linee", 5, 200, 40)
+    chaos = st.slider("Chaos", 1, 50, 10)
+    photo_speed = st.slider("Velocità cambio immagini", 1, 12, 6)
+
+st.subheader("Keyframe Motion")
+col3, col4, col5 = st.columns(3)
+sv = col3.slider("Start Value", 0, 100, 10)
+pv = col4.slider("Peak Value", 0, 100, 80)
+ev = col5.slider("End Value", 0, 100, 20)
+
+st.subheader("Output Magnet")
+col6, col7 = st.columns(2)
+fade_start = col6.slider("Start Fade", 0, 30, 5)
+final_val = col7.slider("Final Strength", 0, 100, 100)
+
+inc_master = st.checkbox("Include Master nel mix", True)
+rand_lines = st.checkbox("Linee casuali", False)
 
 if st.button("GENERA"):
     video = generate_master(
@@ -164,11 +190,12 @@ if st.button("GENERA"):
         orientation,
         lines,
         dur,
-        {'sv':10,'pv':80,'ev':20},
-        {'start_fade':5,'final_v':100},
-        True,
-        False,
-        6
+        {'sv':sv,'pv':pv,'ev':ev},
+        {'start_fade':fade_start,'final_v':final_val},
+        inc_master,
+        rand_lines,
+        photo_speed,
+        chaos
     )
 
     st.video(video)
