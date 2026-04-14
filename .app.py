@@ -60,10 +60,7 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
             curr += s_w
         return b
 
-    curr_bounds_h = get_bounds(h)
-    curr_bounds_v = get_bounds(w)
-
-    # --- PRE-PROCESSING AUDIO REACTIVE ---
+    # --- ANALISI AUDIO (REATTIVITÀ) ---
     audio_envelope = np.ones(total_f)
     if up_aud:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t_pre:
@@ -83,9 +80,8 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
         prog_bar.progress(f / total_f)
         status_text.text(f"🚀 Rendering Frame: {f}/{total_f}")
         
-        if rand_lines and f % 2 == 0:
-            curr_bounds_h = get_bounds(h)
-            curr_bounds_v = get_bounds(w)
+        curr_bounds_h = get_bounds(h)
+        curr_bounds_v = get_bounds(w)
         
         curr_s = f / fps
         mid = max_limit / 2
@@ -107,22 +103,33 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
         def pick(prob):
             return m_img if (m_img is not None and random.random() < prob) else active_pool_img
 
-        # --- LOGICA GEOMETRIE CORRETTA --- 
-        
-        # 1. NESSUNO (STUTTER)
-        if orientation == "Nessuno (Foto Intere)":
-            target = pick(magnet_prob)
-            shift = int(random.uniform(-400, 400) * val * dist_mult)
-            frame = np.roll(target, shift, axis=1)
-        
-        # 2. MOSAICO (Griglia statica di foto diverse)
+        # --- LOGICA GEOMETRIE 7.2 DEFINITIVA ---
+
+        # 1. ORIZZONTALE (Tagli a strisce intere)
+        if orientation == "Orizzontale":
+            for start, end in curr_bounds_h:
+                target = pick(magnet_prob)
+                shift = int(random.uniform(-350, 350) * val * dist_mult)
+                frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
+
+        # 2. VERTICALE (Tagli a strisce intere)
+        elif orientation == "Verticale":
+            for start, end in curr_bounds_v:
+                target = pick(magnet_prob)
+                shift = int(random.uniform(-350, 350) * val * dist_mult)
+                frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
+
+        # 3. MOSAICO (Tagli a quadratini con spostamento indipendente)
         elif orientation == "Mosaico":
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
                     target = pick(magnet_prob)
-                    frame[bh[0]:bh[1], bv[0]:bv[1]] = target[bh[0]:bh[1], bv[0]:bv[1]]
-        
-        # 3. MIX (H+V) - Tagli incrociati NON sovrapposti per ogni cella
+                    shift = int(random.uniform(-250, 250) * val * dist_mult)
+                    # Glitch a quadratini: ogni cella ha il suo roll
+                    patch = np.roll(target[bh[0]:bh[1], bv[0]:bv[1]], shift, axis=1)
+                    frame[bh[0]:bh[1], bv[0]:bv[1]] = patch
+
+        # 4. MIX (H+V) (Tagli a quadratini con direzioni incrociate)
         elif orientation == "Mix (H+V)":
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
@@ -135,18 +142,9 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
                         line_v = np.roll(target[:, bv[0]:bv[1]], shift, axis=0)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
 
-        # 4. ORIZZONTALE / VERTICALE (Ripristino logica strisce intere Codice 6) [cite: 4]
+        # 5. FOTO INTERE (Nessun glitch, solo sequenza)
         else:
-            if orientation == "Orizzontale":
-                for start, end in curr_bounds_h:
-                    target = pick(magnet_prob)
-                    shift = int(random.uniform(-350, 350) * val * dist_mult)
-                    frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
-            elif orientation == "Verticale":
-                for start, end in curr_bounds_v:
-                    target = pick(magnet_prob)
-                    shift = int(random.uniform(-350, 350) * val * dist_mult)
-                    frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
+            frame = pick(magnet_prob)
 
         final_frames.append(frame)
 
@@ -160,9 +158,9 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
         clip = clip.set_audio(AudioFileClip(aud_path).subclip(0, min(AudioFileClip(aud_path).duration, max_limit)))
     
     v_out = tempfile.mktemp(suffix=".mp4")
-    clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="6000k", logger=None)
+    clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="8000k", logger=None)
     
-    report_text = f"--- LOOP507 REPORT 7.1 ---\nStile: {orientation}\nGriglie Random: {rand_lines}\nFrame: {total_f}"
+    report_text = f"--- LOOP507 REPORT 7.2 ---\nGeometria: {orientation}\nAudio Reactive: {'SI' if up_aud else 'NO'}\nVelocità Foto: {photo_speed} fps"
     l_out = tempfile.mktemp(suffix=".txt")
     with open(l_out, "w") as f: f.write(report_text)
     
@@ -172,7 +170,7 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
 if 'v_p' not in st.session_state: st.session_state.v_p = None
 if 'r_p' not in st.session_state: st.session_state.r_p = None
 
-st.title("Recursive Cut Pro - Loop507 7.1 🚀")
+st.title("Recursive Cut Pro - Loop507 7.2 🚀")
 col1, col2, col3 = st.columns([1, 1.2, 1])
 
 with col1:
@@ -180,43 +178,42 @@ with col1:
     up_m = st.file_uploader("FOTO MASTER", type=["jpg","png","jpeg"])
     up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
-    inc_m = st.toggle("Master nel Calderone", value=True)
-    m_f = st.slider("Magnetismo Finale %", 0, 100, 100)
-    m_s = st.slider("Inizio Snap (sec)", 0.0, 10.0, 7.0)
+    inc_m = st.toggle("Includi Master nel Calderone", value=True)
+    m_f = st.slider("Magnetismo Master Finale %", 0, 100, 100)
+    m_s = st.slider("Secondo di Inizio Snap", 0.0, 10.0, 7.0)
 
 with col2:
-    st.subheader("✂️ Parametri")
-    chaos_order = st.slider("🌀 Caos → Ordine", 0, 100, 50)
-    chaos_norm = chaos_order / 100.0
-    sv = int(80 * (1 - chaos_norm) + 2)
-    pv = min(int(100 * (1 - chaos_norm) + 5), 100)
-    ev = int(70 * (1 - chaos_norm) + 2)
+    st.subheader("✂️ Glitch Engine")
+    chaos = st.slider("🌀 Bilanciamento Caos → Ordine", 0, 100, 50)
+    c_n = chaos / 100.0
+    sv = int(85 * (1 - c_n) + 2)
+    pv = min(int(100 * (1 - c_n) + 5), 100)
+    ev = int(75 * (1 - c_n) + 2)
 
-    with st.expander("⚙️ Override manuale sv/pv/ev"):
+    with st.expander("🛠️ Override Potenza Manuale"):
         sv = st.slider("Start Power", 0, 100, sv)
         pv = st.slider("Peak Power", 0, 100, pv)
         ev = st.slider("End Power", 0, 100, ev)
 
     st.divider()
-    photo_speed = st.slider("🎞️ Velocità cambio foto (fps)", 1, 24, 6)
+    photo_speed = st.slider("🎞️ Velocità Calderone (foto/sec)", 1, 24, 6)
     st.divider()
-    lines = st.slider("Spessore Base (px)", 1, 500, 45)
-    rand_l = st.toggle("Dimensioni Random (DINAMICHE)", value=False)
-    dir_type = st.radio("Geometria", ["Orizzontale", "Verticale", "Mosaico", "Mix (H+V)", "Nessuno (Foto Intere)"])
+    lines = st.slider("Dimensione Tagli (px)", 1, 500, 45)
+    rand_l = st.toggle("Dimensioni Tagli Variabili", value=False)
+    dir_type = st.radio("Tipo di Geometria", ["Orizzontale", "Verticale", "Mosaico", "Mix (H+V)", "Nessuno (Foto Intere)"])
 
 with col3:
     st.subheader("🎬 Export")
-    fmt = st.selectbox("Formato", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
-    dur = st.number_input("Durata (sec)", 1, 60, 10)
+    fmt = st.selectbox("Formato Video", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
+    dur = st.number_input("Durata Totale (sec)", 1, 60, 10)
     
-    if st.button("🚀 GENERA"):
+    if st.button("🚀 GENERA VIDEO"):
         if up_m or up_t:
             v, r = generate_master(up_m, up_t, up_a, "Recursive", dir_type, lines, dur, {'sv':sv,'pv':pv,'ev':ev}, {'start_fade':m_s,'final_v':m_f}, fmt, inc_m, rand_l, photo_speed)
             st.session_state.v_p, st.session_state.r_p = v, r
-        else: st.error("Carica foto!")
+        else: st.error("Errore: Carica almeno una foto!")
 
     if st.session_state.v_p:
         st.video(st.session_state.v_p)
-        c1, c2 = st.columns(2)
-        with c1: st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "video.mp4")
-        with c2: st.download_button("📄 LOG", open(st.session_state.r_p, "rb"), "report.txt")
+        st.download_button("💾 SCARICA VIDEO", open(st.session_state.v_p, "rb"), "loop507_video.mp4")
+        st.download_button("📄 SCARICA LOG", open(st.session_state.r_p, "rb"), "report.txt")
