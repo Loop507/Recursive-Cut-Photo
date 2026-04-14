@@ -11,13 +11,14 @@ import gc
 from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Recursive Cut Pro - Loop507", layout="wide")
+st.set_page_config(page_title="Slice Photo Pro - Loop507", layout="wide")
 
 def resize_to_format(img, format_type):
     h, w = img.shape[:2]
     if format_type == "16:9 (Orizzontale)": target_w, target_h = 1280, 720
     elif format_type == "9:16 (Verticale)": target_w, target_h = 720, 1280
     else: target_w, target_h = 1080, 1080
+    
     aspect_target = target_w / target_h
     aspect_img = w / h
     if aspect_img > aspect_target:
@@ -41,7 +42,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
     m_name = "Assente"
     if up_master:
         m_img = resize_to_format(np.array(Image.open(up_master).convert("RGB")), format_type)
-        m_name = "Presente (Master)"
+        m_name = up_master.name
     
     t_count = len(up_trit) if up_trit else 0
     if up_trit:
@@ -67,7 +68,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
 
     # --- ANALISI AUDIO ---
     audio_envelope = np.ones(total_f)
-    a_info = {"min": 0.0, "max": 0.0, "mean": 0.0, "active": "No"}
+    a_info = {"max": 0.0}
     temp_aud_path = None
 
     if up_aud:
@@ -78,34 +79,39 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         
         y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
         rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
-        a_info = {"min": float(rms.min()), "max": float(rms.max()), "mean": float(rms.mean()), "active": "Attivo (RMS Analysis)"}
+        a_info["max"] = float(rms.max())
         rms_norm = rms / (rms.max() + 1e-6)
         audio_envelope = np.interp(np.linspace(0, len(rms_norm)-1, total_f), np.arange(len(rms_norm)), rms_norm)
 
-    # --- GENERATORE DI FRAME ---
+    # --- GENERATORE DI FRAME (Motore v7.8) ---
     def make_frame(t):
         f = int(t * fps)
         if f >= total_f: f = total_f - 1
         
         prog_bar.progress(f / total_f)
-        status_text.text(f"🚀 Rendering Frame: {f}/{total_f}")
+        status_text.text(f"🚀 Slice Dissection in corso: {f}/{total_f} frames")
 
         curr_bounds_h = get_bounds(h)
         curr_bounds_v = get_bounds(w)
         
-        curr_s = t
         mid = max_limit / 2
+        # Curva di potenza glitch
+        if t <= mid:
+            val = (k_p['sv'] + (t/mid)*(k_p['pv']-k_p['sv']))/100
+        else:
+            val = (k_p['pv'] + ((t-mid)/mid)*(k_p['ev']-k_p['pv']))/100
         
-        val = (k_p['sv'] + (f/(total_f/2))*(k_p['pv']-k_p['sv']))/100 if curr_s <= mid else (k_p['pv'] + ((curr_s-mid)/mid)*(k_p['ev']-k_p['pv']))/100
         val *= audio_envelope[f]
         
+        # Logica Magnetismo
         magnet_prob = 0.0
         dist_mult = 1.0 
-        if m_img is not None and curr_s > o_p['start_fade']:
-            t_fade = (curr_s - o_p['start_fade']) / (max_limit - o_p['start_fade'])
+        if m_img is not None and t > o_p['start_fade']:
+            t_fade = (t - o_p['start_fade']) / (max_limit - o_p['start_fade'])
             magnet_prob = min(1.0, t_fade * (o_p['final_v'] / 100))
-            if (max_limit - curr_s) < 0.25:
-                magnet_prob = 1.0; dist_mult = 0.0
+            if (max_limit - t) < 0.25: # Snap finale
+                magnet_prob = 1.0
+                dist_mult = 0.0
             else:
                 dist_mult = 1.0 - magnet_prob
 
@@ -140,18 +146,14 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         elif orientation == "Mix (H+V)":
             for start, end in curr_bounds_h:
                 target = pick()
-                direction = random.choice([-1, 1])
-                shift = int(random.uniform(50, 500) * val * dist_mult) * direction
-                if random.random() > 0.5:
-                    frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
-                else:
-                    frame[start:end, :] = np.roll(target[start:end, :], shift, axis=0)
+                shift = int(random.uniform(-500, 500) * val * dist_mult)
+                frame[start:end, :] = np.roll(target[start:end, :], shift, axis=random.choice([0,1]))
         else:
             frame = pick()
 
         return frame
 
-    # --- EXPORT VIDEO ---
+    # --- EXPORT ---
     clip = VideoClip(make_frame, duration=max_limit)
     if temp_aud_path:
         audio_clip = AudioFileClip(temp_aud_path).set_duration(max_limit)
@@ -165,103 +167,95 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
     if temp_aud_path and os.path.exists(temp_aud_path): os.remove(temp_aud_path)
     gc.collect()
 
-    # --- REPORT PROFESSIONALE ---
+    # --- GENERAZIONE REPORT PROFESSIONALE [SLICE_PHOTO] ---
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report_content = f"""
+    total_assets = t_count + (1 if (up_master and inc_master) else 0)
+    
+    report_text = f"""
 ╔════════════════════════════════════════════════════════════════╗
-  RECURSIVE CUT PRO v7.8 - TECHNICAL DATA SHEET
+  RECURSIVE CUT PRO v7.8 - OFFICIAL LOG REPORT
   Generated on: {ts}
 ╚════════════════════════════════════════════════════════════════╝
 
-[1] SPECIFICHE VIDEO
-Pixels          : {w}x{h} ({format_type})
-Duration        : {max_limit} seconds
-Frame Rate      : {fps} FPS
-Total Frames    : {total_f}
-Bitrate Target  : 5000 kbps
+[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
-[2] ANALISI ASSET
-Master Image    : {m_name}
-Pool Size       : {t_count} images
-Master in Pool  : {"Attivo" if inc_master else "Disattivato"}
-Audio Track     : {a_info['active']}
-Audio RMS Peak  : {a_info['max']:.4f}
+:: STILE: Minimalismo Computazionale / Dissezione Brutalista
+:: MOTORE: recursive_cut_pro [v7.8]
+:: EFFETTO: Recursive Strand Shift (Reattivo)
+:: ANALISI: RMS Signal Analysis / Dynamic Slicing
+:: PROCESSO: Frammentazione Ricorsiva / Magnetismo Forzato
 
-[3] CONFIGURAZIONE EFFETTI
-Geometry        : {orientation}
-Base Thickness  : {strand_val}px
-Dynamic Slicing : {"Sì" if rand_lines else "No"}
-Photo Cycling   : {photo_speed} fps
-Chaos/Order     : {chaos_val}%
+"L'immagine è stata smontata. Il codice ne ha riscritto la struttura."
 
-[4] LOGICA DI MAGNETISMO
-Start Fade      : {o_p['start_fade']} sec
-Final Pull      : {o_p['final_v']}%
-End Snap        : 0.25 sec before end
+---
+> TECHNICAL LOG SHEET:
+* Asset Pool: {total_assets} foto dissezionate
+* Rendering: {total_f} frame totali generati
+* Geometria: {orientation} @ {strand_val}px
+* Power Curve: Start {k_p['sv']}% | Peak {k_p['pv']}% | End {k_p['ev']}%
+* Magnetismo: Inizio Snap @ {o_p['start_fade']}s (Pull {o_p['final_v']}%)
+* Audio Peak: {a_info['max']:.4f} normalized
 
-[5] POWER CURVE (Potenza Glitch)
-Start Power     : {k_p['sv']}%
-Peak Power      : {k_p['pv']}%
-End Power       : {k_p['ev']}%
+> Regia e Algoritmo: Loop507
 
-------------------------------------------------------------------
-Final Output    : {os.path.basename(v_out)}
-Encoder         : H.264 / AAC (Optimized for Streamlit)
-------------------------------------------------------------------
-          Generated by Recursive Cut Pro - Loop507
-    """
+#Loop507 #SlicePhoto #StrandShift #DigitalAnatomy #SignalCorruption #BrutalistArt 
+#ComputationalMinimalism #DataDestruction #ExperimentalVideo #GlitchArt
+"""
+    
     r_out = tempfile.mktemp(suffix=".txt")
     with open(r_out, "w", encoding="utf-8") as f_rep:
-        f_rep.write(report_content)
+        f_rep.write(report_text)
     
     return v_out, r_out
 
-# --- INTERFACCIA ---
-if 'v_p' not in st.session_state: st.session_state.v_p, st.session_state.r_p = None, None
+# --- INTERFACCIA UTENTE ---
+if 'v_p' not in st.session_state: 
+    st.session_state.v_p, st.session_state.r_p = None, None
 
-st.title("Recursive Cut Pro 7.8 🚀")
+st.title("Slice Photo Pro 7.8 🔪")
 col1, col2, col3 = st.columns([1, 1.2, 1])
 
 with col1:
-    st.subheader("🖼️ Assets & Magnetismo")
-    up_m = st.file_uploader("FOTO MASTER", type=["jpg","png","jpeg"])
-    up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
-    up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
+    st.subheader("🖼️ Input Assets")
+    up_m = st.file_uploader("FOTO MASTER (Punto di arrivo)", type=["jpg","png","jpeg"])
+    up_t = st.file_uploader("CALDERONE (Pool di frammenti)", type=["jpg","png","jpeg"], accept_multiple_files=True)
+    up_a = st.file_uploader("COLONNA SONORA (Analisi RMS)", type=["mp3","wav"])
     st.divider()
-    m_f = st.slider("Magnetismo Master Finale %", 0, 100, 100)
-    m_s = st.slider("Inizio Ritorno Master (sec)", 0.0, 10.0, 7.0)
-    inc_m = st.toggle("Usa Master nel Calderone", value=True)
+    m_f = st.slider("Magnetismo Finale %", 0, 100, 100)
+    m_s = st.slider("Inizio Rientro Master (sec)", 0.0, 15.0, 7.0)
+    inc_m = st.toggle("Includi Master nel Calderone", value=True)
 
 with col2:
-    st.subheader("✂️ Parametri Glitch")
-    chaos = st.slider("🌀 Bilanciamento Caos → Ordine", 0, 100, 50)
+    st.subheader("✂️ Algoritmo di Taglio")
+    chaos = st.slider("🌀 Chaos vs Order", 0, 100, 50)
     c_n = chaos / 100.0
     k_params = {'sv': int(85*(1-c_n)+2), 'pv': min(int(100*(1-c_n)+5),100), 'ev': int(75*(1-c_n)+2)}
     
-    with st.expander("⚙️ Override Potenza"):
-        sv = st.slider("Start", 0, 100, k_params['sv'])
-        pv = st.slider("Peak", 0, 100, k_params['pv'])
-        ev = st.slider("End", 0, 100, k_params['ev'])
+    with st.expander("⚙️ Fine-Tune Potenza"):
+        sv = st.slider("Start Power", 0, 100, k_params['sv'])
+        pv = st.slider("Peak Power", 0, 100, k_params['pv'])
+        ev = st.slider("End Power", 0, 100, k_params['ev'])
         k_params = {'sv': sv, 'pv': pv, 'ev': ev}
 
     st.divider()
-    photo_speed = st.slider("🎞️ Velocità Cambio Foto (fps)", 1, 24, 6)
-    lines = st.slider("Spessore Tagli (px)", 1, 500, 45)
-    rand_l = st.toggle("Tagli Dinamici", value=False)
-    dir_type = st.radio("Geometria", ["Orizzontale", "Verticale", "Mosaico", "Mix (H+V)", "Nessuno (Foto Intere)"])
+    photo_speed = st.slider("🎞️ Frame Rate Foto (fps)", 1, 24, 6)
+    lines = st.slider("Spessore Strand (px)", 1, 500, 45)
+    rand_l = st.toggle("Dynamic Slicing (Tagli Random)", value=False)
+    dir_type = st.radio("Geometria di Dissezione", ["Orizzontale", "Verticale", "Mosaico", "Mix (H+V)"])
 
 with col3:
-    st.subheader("🎬 Export")
-    fmt = st.selectbox("Formato", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
-    dur = st.number_input("Durata (sec)", 1, 120, 10)
+    st.subheader("🎬 Rendering")
+    fmt = st.selectbox("Aspect Ratio", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
+    dur = st.number_input("Durata Totale (sec)", 1, 120, 10)
     
-    if st.button("🚀 GENERA VIDEO"):
+    if st.button("🚀 AVVIA DISSEZIONE"):
         if up_m or up_t:
             v, r = generate_master(up_m, up_t, up_a, dir_type, lines, dur, k_params, {'start_fade':m_s,'final_v':m_f}, fmt, inc_m, rand_l, photo_speed, chaos)
             st.session_state.v_p, st.session_state.r_p = v, r
-        else: st.error("Carica foto!")
+        else:
+            st.error("Errore: Carica almeno una foto nel Master o nel Calderone.")
 
     if st.session_state.v_p:
         st.video(st.session_state.v_p)
-        st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_78.mp4")
-        st.download_button("📄 REPORT TECNICO", open(st.session_state.r_p, "rb"), "report_pro_78.txt")
+        st.download_button("💾 SCARICA VIDEO", open(st.session_state.v_p, "rb"), "slice_dissection.mp4")
+        st.download_button("📄 SCARICA REPORT TECNICO", open(st.session_state.r_p, "rb"), "slice_report.txt")
