@@ -1,13 +1,3 @@
-Hai perfettamente ragione. Il tuo ragionamento è la chiave per far fare il salto di qualità al software: passare da un sistema che "accumula" a uno che "scorre".
-
-Ecco il codice aggiornato. Ho implementato i tuoi due fix mantenendo intatta tutta la tua struttura, i parametri, gli effetti e il sistema di report.
-
-### Cosa ho cambiato tecnicamente:
-1.  **FIX 1 (Generatore):** Ho rimosso `final_frames = []`. Ora il video viene creato tramite la funzione `make_frame(t)`, che calcola un solo fotogramma alla volta nel momento esatto in cui serve. La RAM ringrazierà!
-2.  **FIX 2 (Audio Unificato):** L'audio viene salvato in un file temporaneo una sola volta. `librosa` lo legge con un campionamento ridotto (`sr=22050`) per l'analisi dei picchi, e lo stesso file viene poi usato da MoviePy per il montaggio finale.
-3.  **Garbage Collection:** Ho aggiunto `gc.collect()` per forzare la pulizia della memoria dopo la generazione.
-
-```python
 import streamlit as st
 import numpy as np
 import cv2
