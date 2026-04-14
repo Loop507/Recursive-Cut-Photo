@@ -34,7 +34,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
     prog_bar = st.progress(0)
     status_text = st.empty()
 
-    # --- ASSETS SETUP ---
+    # Asset Setup
     m_img = None
     m_name = "No"
     if up_master:
@@ -75,20 +75,14 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         rms_norm = rms / (rms.max() + 1e-6)
         audio_envelope = np.interp(np.linspace(0, len(rms_norm)-1, total_f), np.arange(len(rms_norm)), rms_norm)
 
-    # Inizializzazione confini stile v5.0
-    curr_bounds_h = get_bounds(h)
-    curr_bounds_v = get_bounds(w)
-
     final_frames = []
 
     for f in range(total_f):
         prog_bar.progress(f / total_f)
         status_text.text(f"🚀 Rendering: {f}/{total_f}")
         
-        # Logica di ricalcolo dinamico v5.0
-        if rand_lines and f % 2 == 0:
-            curr_bounds_h = get_bounds(h)
-            curr_bounds_v = get_bounds(w)
+        curr_bounds_h = get_bounds(h)
+        curr_bounds_v = get_bounds(w)
         
         curr_s = f / fps
         mid = max_limit / 2
@@ -101,7 +95,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         if m_img is not None and curr_s > o_p['start_fade']:
             t_fade = (curr_s - o_p['start_fade']) / (max_limit - o_p['start_fade'])
             magnet_prob = min(1.0, t_fade * (o_p['final_v'] / 100))
-            if (max_limit - curr_s) < 0.25: 
+            if (max_limit - curr_s) < 0.25: # Snap finale
                 magnet_prob = 1.0; dist_mult = 0.0
             else:
                 dist_mult = 1.0 - magnet_prob
@@ -113,44 +107,43 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         def pick():
             return m_img if (m_img is not None and random.random() < magnet_prob) else active_pool_img
 
-        # --- CHIRURGIA: INTEGRAZIONE LOGICA v5.0 ---
-        
-        if orientation == "Mosaico":
-            # Logica v5.0 pura: riempimento griglia a tasselli
-            for bh in curr_bounds_h:
-                for bv in curr_bounds_v:
-                    target = pick()
-                    frame[bh[0]:bh[1], bv[0]:bv[1]] = target[bh[0]:bh[1], bv[0]:bv[1]]
-
-        elif orientation == "Orizzontale":
-            # Logica v5.0: roll sull'asse 1 (X) per strisce intere
+        # --- LOGICA GEOMETRIE (FIXED) ---
+        if orientation == "Orizzontale":
             for start, end in curr_bounds_h:
                 target = pick()
-                shift = int(random.uniform(-400, 400) * val * dist_mult)
+                shift = int(random.uniform(-500, 500) * val * dist_mult)
+                # Striscia intera da 0 a W
                 frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
 
         elif orientation == "Verticale":
-            # Logica v5.0: roll sull'asse 0 (Y) per strisce intere
             for start, end in curr_bounds_v:
                 target = pick()
-                shift = int(random.uniform(-400, 400) * val * dist_mult)
+                shift = int(random.uniform(-500, 500) * val * dist_mult)
+                # Colonna intera da 0 a H
                 frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
+
+        elif orientation == "Mosaico":
+            for bh in curr_bounds_h:
+                for bv in curr_bounds_v:
+                    target = pick()
+                    # Ogni cella prende un'immagine diversa, nessuno shift → puro collage
+                    frame[bh[0]:bh[1], bv[0]:bv[1]] = target[bh[0]:bh[1], bv[0]:bv[1]]
 
         elif orientation == "Mix (H+V)":
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
                     target = pick()
-                    shift = int(random.uniform(-300, 300) * val * dist_mult)
+                    shift = int(random.uniform(-400, 400) * val * dist_mult)
                     if random.random() > 0.5:
+                        # Shift sull'intera riga, poi ritaglia la fetta bv → striscia che sfora
                         line_h = np.roll(target[bh[0]:bh[1], :], shift, axis=1)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_h[:, bv[0]:bv[1]]
                     else:
+                        # Shift sull'intera colonna, poi ritaglia la fetta bh → colonna che sfora
                         line_v = np.roll(target[:, bv[0]:bv[1]], shift, axis=0)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
         else:
-            target = pick()
-            shift = int(random.uniform(-400, 400) * val * dist_mult)
-            frame = np.roll(target, shift, axis=1)
+            frame = pick()
 
         final_frames.append(frame)
 
@@ -164,7 +157,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="8000k", logger=None)
     
-    # --- REPORT FORMATTATO ---
+    # --- REPORT RICHIESTO ---
     report_text = f"""--- LOOP507 REPORT ---
 
 [ PROGETTO ]
@@ -199,10 +192,10 @@ Magnetismo Finale: {o_p['final_v']}%
     
     return v_out, r_out
 
-# --- INTERFACCIA STREAMLIT ---
+# --- INTERFACCIA ---
 if 'v_p' not in st.session_state: st.session_state.v_p, st.session_state.r_p = None, None
 
-st.title("Recursive Cut Pro 11.4 🚀")
+st.title("Recursive Cut Pro 7.8 🚀")
 col1, col2, col3 = st.columns([1, 1.2, 1])
 
 with col1:
@@ -222,9 +215,9 @@ with col2:
     k_params = {'sv': int(85*(1-c_n)+2), 'pv': min(int(100*(1-c_n)+5),100), 'ev': int(75*(1-c_n)+2)}
     
     with st.expander("⚙️ Override Potenza"):
-        sv = st.slider("Start Power", 0, 100, k_params['sv'])
-        pv = st.slider("Peak Power", 0, 100, k_params['pv'])
-        ev = st.slider("End Power", 0, 100, k_params['ev'])
+        sv = st.slider("Start", 0, 100, k_params['sv'])
+        pv = st.slider("Peak", 0, 100, k_params['pv'])
+        ev = st.slider("End", 0, 100, k_params['ev'])
         k_params = {'sv': sv, 'pv': pv, 'ev': ev}
 
     st.divider()
@@ -246,5 +239,5 @@ with col3:
 
     if st.session_state.v_p:
         st.video(st.session_state.v_p)
-        st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_11_4.mp4")
-        st.download_button("📄 REPORT", open(st.session_state.r_p, "rb"), "report_11_4.txt")
+        st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_78.mp4")
+        st.download_button("📄 REPORT", open(st.session_state.r_p, "rb"), "report_78.txt")
