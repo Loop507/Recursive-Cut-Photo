@@ -136,18 +136,14 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
 
         elif orientation == "Mix (H+V)":
-            # Prima passata: strisce orizzontali (come Orizzontale)
+            # Ogni striscia orizzontale: shift H o V casuale, nessun salto → no neri
             for start, end in curr_bounds_h:
+                target = pick()
+                shift = int(random.uniform(-500, 500) * val * dist_mult)
                 if random.random() > 0.5:
-                    target = pick()
-                    shift = int(random.uniform(-500, 500) * val * dist_mult)
                     frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
-            # Seconda passata: strisce verticali (come Verticale) si intrecciano sopra
-            for start, end in curr_bounds_v:
-                if random.random() > 0.5:
-                    target = pick()
-                    shift = int(random.uniform(-500, 500) * val * dist_mult)
-                    frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
+                else:
+                    frame[start:end, :] = np.roll(target[start:end, :], shift, axis=0)
         else:
             frame = pick()
 
