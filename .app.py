@@ -34,7 +34,7 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
     prog_bar = st.progress(0)
     status_text = st.empty()
 
-    # Setup Immagini
+    # Asset Setup
     m_img = None
     if up_master:
         m_img = resize_to_format(np.array(Image.open(up_master).convert("RGB")), format_type)
@@ -69,7 +69,6 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
         rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
         rms_norm = rms / (rms.max() + 1e-6)
         audio_envelope = np.interp(np.linspace(0, len(rms_norm)-1, total_f), np.arange(len(rms_norm)), rms_norm)
-        up_aud.seek(0)
 
     final_frames = []
 
@@ -77,29 +76,23 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
         prog_bar.progress(f / total_f)
         status_text.text(f"🚀 Rendering: {f}/{total_f}")
         
-        if rand_lines and f % 2 == 0:
-            curr_bounds_h = get_bounds(h)
-            curr_bounds_v = get_bounds(w)
-        elif f == 0:
-            curr_bounds_h = get_bounds(h)
-            curr_bounds_v = get_bounds(w)
+        # Griglie (H per righe, V per colonne)
+        curr_bounds_h = get_bounds(h)
+        curr_bounds_v = get_bounds(w)
         
         curr_s = f / fps
         mid = max_limit / 2
         val = (k_p['sv'] + (f/(total_f/2))*(k_p['pv']-k_p['sv']))/100 if curr_s <= mid else (k_p['pv'] + ((curr_s-mid)/mid)*(k_p['ev']-k_p['pv']))/100
         val *= audio_envelope[f]
         
-        # --- LOGICA MAGNETISMO (COORDINATA CON I 3 PARAMETRI) ---
+        # MAGNETISMO (I 3 COMANDANTI)
         magnet_prob = 0.0
         dist_mult = 1.0 
         if m_img is not None and curr_s > o_p['start_fade']:
             t_fade = (curr_s - o_p['start_fade']) / (max_limit - o_p['start_fade'])
             magnet_prob = min(1.0, t_fade * (o_p['final_v'] / 100))
-            if (max_limit - curr_s) < 0.3: # Snap finale
-                magnet_prob = 1.0
-                dist_mult = 0.0
-            else:
-                dist_mult = 1.0 - magnet_prob
+            if (max_limit - curr_s) < 0.3: magnet_prob = 1.0; dist_mult = 0.0
+            else: dist_mult = 1.0 - magnet_prob
 
         frames_per_photo = max(1, fps // photo_speed)
         active_pool_img = pool_imgs[(f // frames_per_photo) % len(pool_imgs)]
@@ -108,7 +101,7 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
         def pick():
             return m_img if (m_img is not None and random.random() < magnet_prob) else active_pool_img
 
-        # --- GEOMETRIE RIPRISTINATE ---
+        # --- GEOMETRIE (CORRETTE E ALLINEATE AI NOMI) ---
         
         if orientation == "Orizzontale":
             for start, end in curr_bounds_h:
@@ -127,7 +120,6 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
                 for bv in curr_bounds_v:
                     target = pick()
                     shift = int(random.uniform(-200, 200) * val * dist_mult)
-                    # Glitch a quadrattini: spostamento interno alla cella
                     patch = np.roll(target[bh[0]:bh[1], bv[0]:bv[1]], shift, axis=1)
                     frame[bh[0]:bh[1], bv[0]:bv[1]] = patch
 
@@ -143,7 +135,7 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
                         line_v = np.roll(target[:, bv[0]:bv[1]], shift, axis=0)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
 
-        else: # Foto Intere (Nessun effetto)
+        else: # Foto Intere
             frame = pick()
 
         final_frames.append(frame)
@@ -157,10 +149,27 @@ def generate_master(up_master, up_trit, up_aud, mode, orientation, strand_val, m
     
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="8000k", logger=None)
-    return v_out
+    
+    # GENERAZIONE REPORT
+    report_content = f"""LOOP507 - REPORT TECNICO V7.6
+---------------------------
+Geometria: {orientation}
+Durata: {max_limit} sec
+Velocità Foto: {photo_speed} fps
+Spessore Tagli: {strand_val} px
+Magnetismo Finale: {o_p['final_v']}%
+Inizio Snap: {o_p['start_fade']} sec
+Glitch Power (S/P/E): {k_p['sv']}/{k_p['pv']}/{k_p['ev']}
+"""
+    r_out = tempfile.mktemp(suffix=".txt")
+    with open(r_out, "w") as f_rep: f_rep.write(report_content)
+    
+    return v_out, r_out
 
 # --- INTERFACCIA ---
-st.title("Recursive Cut Pro 7.4 🚀")
+if 'v_p' not in st.session_state: st.session_state.v_p, st.session_state.r_p = None, None
+
+st.title("Recursive Cut Pro 7.6 🚀")
 col1, col2, col3 = st.columns([1, 1.2, 1])
 
 with col1:
@@ -175,11 +184,11 @@ with col1:
 
 with col2:
     st.subheader("✂️ Parametri Glitch")
-    chaos = st.slider("🌀 Caos → Ordine", 0, 100, 50)
+    chaos = st.slider("🌀 Bilanciamento Caos → Ordine", 0, 100, 50)
     c_n = chaos / 100.0
     k_params = {'sv': int(85*(1-c_n)+2), 'pv': min(int(100*(1-c_n)+5),100), 'ev': int(75*(1-c_n)+2)}
     
-    with st.expander("⚙️ Fine Tuning Potenza (sv/pv/ev)"):
+    with st.expander("⚙️ Fine Tuning Potenza"):
         sv = st.slider("Start", 0, 100, k_params['sv'])
         pv = st.slider("Peak", 0, 100, k_params['pv'])
         ev = st.slider("End", 0, 100, k_params['ev'])
@@ -188,7 +197,7 @@ with col2:
     st.divider()
     photo_speed = st.slider("🎞️ Velocità Calderone (fps)", 1, 24, 6)
     lines = st.slider("Spessore Tagli (px)", 1, 500, 45)
-    rand_l = st.toggle("Tagli Dinamici (Random)", value=False)
+    rand_l = st.toggle("Tagli Dinamici", value=False)
     dir_type = st.radio("Geometria", ["Orizzontale", "Verticale", "Mosaico", "Mix (H+V)", "Nessuno (Foto Intere)"])
 
 with col3:
@@ -196,8 +205,13 @@ with col3:
     fmt = st.selectbox("Formato", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
     dur = st.number_input("Durata (sec)", 1, 60, 10)
     
-    if st.button("🚀 GENERA VIDEO"):
+    if st.button("🚀 GENERA"):
         if up_m or up_t:
-            v = generate_master(up_m, up_t, up_a, "Rec", dir_type, lines, dur, k_params, {'start_fade':m_s,'final_v':m_f}, fmt, inc_m, rand_l, photo_speed)
-            st.video(v)
-            st.download_button("💾 SCARICA VIDEO", open(v, "rb"), "loop507_v74.mp4")
+            v, r = generate_master(up_m, up_t, up_a, "Rec", dir_type, lines, dur, k_params, {'start_fade':m_s,'final_v':m_f}, fmt, inc_m, rand_l, photo_speed)
+            st.session_state.v_p, st.session_state.r_p = v, r
+        else: st.error("Carica foto!")
+
+    if st.session_state.v_p:
+        st.video(st.session_state.v_p)
+        st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_v76.mp4")
+        st.download_button("📄 REPORT", open(st.session_state.r_p, "rb"), "report_v76.txt")
