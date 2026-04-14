@@ -136,13 +136,16 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
 
         elif orientation == "Mix (H+V)":
-            # Ogni striscia orizzontale: shift H o V casuale, nessun salto → no neri
+            # Ogni striscia: sceglie H o V, con direzione positiva o negativa casuale
             for start, end in curr_bounds_h:
                 target = pick()
-                shift = int(random.uniform(-500, 500) * val * dist_mult)
+                direction = random.choice([-1, 1])
+                shift = int(random.uniform(50, 500) * val * dist_mult) * direction
                 if random.random() > 0.5:
+                    # Effetto orizzontale: striscia scorre a destra o sinistra
                     frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
                 else:
+                    # Effetto verticale: striscia scorre su o giù
                     frame[start:end, :] = np.roll(target[start:end, :], shift, axis=0)
         else:
             frame = pick()
