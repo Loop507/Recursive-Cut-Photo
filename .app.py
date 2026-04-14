@@ -8,6 +8,7 @@ import random
 import os
 import librosa
 import gc
+from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Recursive Cut Pro - Loop507", layout="wide")
@@ -37,10 +38,10 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
 
     # --- ASSET SETUP ---
     m_img = None
-    m_name = "No"
+    m_name = "Assente"
     if up_master:
         m_img = resize_to_format(np.array(Image.open(up_master).convert("RGB")), format_type)
-        m_name = "Si"
+        m_name = "Presente (Master)"
     
     t_count = len(up_trit) if up_trit else 0
     if up_trit:
@@ -64,7 +65,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
             curr += s_w
         return b
 
-    # --- FIX 2: CARICAMENTO AUDIO OTTIMIZZATO ---
+    # --- ANALISI AUDIO ---
     audio_envelope = np.ones(total_f)
     a_info = {"min": 0.0, "max": 0.0, "mean": 0.0, "active": "No"}
     temp_aud_path = None
@@ -77,17 +78,17 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         
         y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
         rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
-        a_info = {"min": float(rms.min()), "max": float(rms.max()), "mean": float(rms.mean()), "active": "Si (audio-reactive attivo)"}
+        a_info = {"min": float(rms.min()), "max": float(rms.max()), "mean": float(rms.mean()), "active": "Attivo (RMS Analysis)"}
         rms_norm = rms / (rms.max() + 1e-6)
         audio_envelope = np.interp(np.linspace(0, len(rms_norm)-1, total_f), np.arange(len(rms_norm)), rms_norm)
 
-    # --- FIX 1: GENERATORE DI FRAME (MEMORIA COSTANTE) ---
+    # --- GENERATORE DI FRAME ---
     def make_frame(t):
         f = int(t * fps)
         if f >= total_f: f = total_f - 1
         
         prog_bar.progress(f / total_f)
-        status_text.text(f"🚀 Rendering: {f}/{total_f}")
+        status_text.text(f"🚀 Rendering Frame: {f}/{total_f}")
 
         curr_bounds_h = get_bounds(h)
         curr_bounds_v = get_bounds(w)
@@ -120,13 +121,11 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
                 target = pick()
                 shift = int(random.uniform(-500, 500) * val * dist_mult)
                 frame[start:end, :] = np.roll(target[start:end, :], shift, axis=1)
-
         elif orientation == "Verticale":
             for start, end in curr_bounds_v:
                 target = pick()
                 shift = int(random.uniform(-500, 500) * val * dist_mult)
                 frame[:, start:end] = np.roll(target[:, start:end], shift, axis=0)
-
         elif orientation == "Mosaico":
             for bh in curr_bounds_h:
                 for bv in curr_bounds_v:
@@ -138,7 +137,6 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
                     else:
                         line_v = np.roll(target[:, bv[0]:bv[1]], shift, axis=0)
                         frame[bh[0]:bh[1], bv[0]:bv[1]] = line_v[bh[0]:bh[1], :]
-
         elif orientation == "Mix (H+V)":
             for start, end in curr_bounds_h:
                 target = pick()
@@ -153,9 +151,8 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
 
         return frame
 
-    # --- GENERAZIONE ---
+    # --- EXPORT VIDEO ---
     clip = VideoClip(make_frame, duration=max_limit)
-    
     if temp_aud_path:
         audio_clip = AudioFileClip(temp_aud_path).set_duration(max_limit)
         clip = clip.set_audio(audio_clip)
@@ -168,9 +165,54 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
     if temp_aud_path and os.path.exists(temp_aud_path): os.remove(temp_aud_path)
     gc.collect()
 
-    report_text = f"--- LOOP507 REPORT ---\n\nDurata: {max_limit} sec\nFormato: {format_type}\nAudio: {a_info['active']}\nGeometria: {orientation}\n---"
+    # --- REPORT PROFESSIONALE ---
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report_content = f"""
+╔════════════════════════════════════════════════════════════════╗
+  RECURSIVE CUT PRO v7.8 - TECHNICAL DATA SHEET
+  Generated on: {ts}
+╚════════════════════════════════════════════════════════════════╝
+
+[1] SPECIFICHE VIDEO
+Pixels          : {w}x{h} ({format_type})
+Duration        : {max_limit} seconds
+Frame Rate      : {fps} FPS
+Total Frames    : {total_f}
+Bitrate Target  : 5000 kbps
+
+[2] ANALISI ASSET
+Master Image    : {m_name}
+Pool Size       : {t_count} images
+Master in Pool  : {"Attivo" if inc_master else "Disattivato"}
+Audio Track     : {a_info['active']}
+Audio RMS Peak  : {a_info['max']:.4f}
+
+[3] CONFIGURAZIONE EFFETTI
+Geometry        : {orientation}
+Base Thickness  : {strand_val}px
+Dynamic Slicing : {"Sì" if rand_lines else "No"}
+Photo Cycling   : {photo_speed} fps
+Chaos/Order     : {chaos_val}%
+
+[4] LOGICA DI MAGNETISMO
+Start Fade      : {o_p['start_fade']} sec
+Final Pull      : {o_p['final_v']}%
+End Snap        : 0.25 sec before end
+
+[5] POWER CURVE (Potenza Glitch)
+Start Power     : {k_p['sv']}%
+Peak Power      : {k_p['pv']}%
+End Power       : {k_p['ev']}%
+
+------------------------------------------------------------------
+Final Output    : {os.path.basename(v_out)}
+Encoder         : H.264 / AAC (Optimized for Streamlit)
+------------------------------------------------------------------
+          Generated by Recursive Cut Pro - Loop507
+    """
     r_out = tempfile.mktemp(suffix=".txt")
-    with open(r_out, "w") as f_rep: f_rep.write(report_text)
+    with open(r_out, "w", encoding="utf-8") as f_rep:
+        f_rep.write(report_content)
     
     return v_out, r_out
 
@@ -222,3 +264,4 @@ with col3:
     if st.session_state.v_p:
         st.video(st.session_state.v_p)
         st.download_button("💾 VIDEO", open(st.session_state.v_p, "rb"), "loop_78.mp4")
+        st.download_button("📄 REPORT TECNICO", open(st.session_state.r_p, "rb"), "report_pro_78.txt")
