@@ -6,43 +6,25 @@ import tempfile
 import random
 import librosa
 from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
-from moviepy.editor import AudioFileClip
 
 st.set_page_config(page_title="Recursive Cut Pro - Loop507", layout="wide")
 
-# --- RESIZE ---
-def resize_to_format(img, format_type):
-    h, w = img.shape[:2]
-    if format_type == "16:9 (Orizzontale)": target_w, target_h = 1280, 720
-    elif format_type == "9:16 (Verticale)": target_w, target_h = 720, 1280
-    else: target_w, target_h = 1080, 1080
+# --- CARICA IMMAGINE SENZA RESIZE ---
+def load_image(img_file):
+    return np.array(Image.open(img_file).convert("RGB"))
 
-    aspect_target = target_w / target_h
-    aspect_img = w / h
+# --- RENDER STREAM (AUDIO DIRETTO) ---
+def render_video_stream(frame_func, w, h, fps, total_f, audio_path=None):
 
-    if aspect_img > aspect_target:
-        new_w = int(h * aspect_target)
-        start_x = (w - new_w) // 2
-        img = img[:, start_x:start_x+new_w]
-    else:
-        new_h = int(w / aspect_target)
-        start_y = (h - new_h) // 2
-        img = img[start_y:start_y+new_h, :]
-
-    return cv2.resize(img, (target_w, target_h))
-
-
-# --- RENDER STREAM ---
-def render_video_stream(frame_func, w, h, fps, total_f, audio_path=None, max_limit=10):
-
-    temp_video = tempfile.mktemp(suffix=".mp4")
+    output_path = tempfile.mktemp(suffix=".mp4")
 
     writer = FFMPEG_VideoWriter(
-        temp_video,
+        output_path,
         (w, h),
         fps=fps,
         codec="libx264",
-        bitrate="8000k"
+        bitrate="4000k",
+        audiofile=audio_path  # 🔥 audio integrato subito
     )
 
     for f in range(total_f):
@@ -50,44 +32,22 @@ def render_video_stream(frame_func, w, h, fps, total_f, audio_path=None, max_lim
         writer.write_frame(frame)
 
     writer.close()
-
-    if audio_path:
-        video = AudioFileClip(temp_video)
-        audio = AudioFileClip(audio_path)
-
-        final = video.set_audio(
-            audio.subclip(0, min(audio.duration, max_limit))
-        )
-
-        final_output = tempfile.mktemp(suffix=".mp4")
-        final.write_videofile(
-            final_output,
-            codec="libx264",
-            audio_codec="aac",
-            fps=fps,
-            logger=None
-        )
-
-        return final_output
-
-    return temp_video
+    return output_path
 
 
-# --- GENERATE ---
+# --- GENERATORE PRINCIPALE ---
 def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
-                    max_limit, k_p, o_p, format_type, inc_master,
-                    rand_lines, photo_speed, chaos_val):
+                    max_limit, k_p, o_p, inc_master,
+                    rand_lines, photo_speed):
 
-    fps = 24
+    fps = 20
     total_f = int(max_limit * fps)
 
     # --- IMMAGINI ---
-    m_img = None
-    if up_master:
-        m_img = resize_to_format(np.array(Image.open(up_master).convert("RGB")), format_type)
+    m_img = load_image(up_master) if up_master else None
 
     if up_trit:
-        t_processed = [resize_to_format(np.array(Image.open(f).convert("RGB")), format_type) for f in up_trit]
+        t_processed = [load_image(f) for f in up_trit]
     else:
         t_processed = [m_img] if m_img is not None else [np.zeros((720, 1280, 3), dtype=np.uint8)]
 
@@ -95,6 +55,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
     if m_img is not None and inc_master:
         pool_imgs.append(m_img)
 
+    # 🔥 usa dimensione originale
     h, w = pool_imgs[0].shape[:2]
 
     # --- BOUNDS ---
@@ -109,7 +70,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
             curr += s_w
         return b
 
-    # --- AUDIO ANALYSIS ---
+    # --- AUDIO ---
     audio_envelope = np.ones(total_f)
     audio_path = None
 
@@ -180,8 +141,7 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val,
         w, h,
         fps,
         total_f,
-        audio_path=audio_path,
-        max_limit=max_limit
+        audio_path=audio_path
     )
 
     return video_path
@@ -194,9 +154,9 @@ up_m = st.file_uploader("FOTO MASTER", type=["jpg","png"])
 up_t = st.file_uploader("CALDERONE", type=["jpg","png"], accept_multiple_files=True)
 up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
 
-dur = st.slider("Durata", 1, 60, 10)
+dur = st.slider("Durata", 1, 30, 10)
 orientation = st.selectbox("Geometria", ["Orizzontale","Verticale"])
-lines = st.slider("Spessore", 5, 200, 40)
+lines = st.slider("Spessore linee", 5, 200, 40)
 
 if st.button("GENERA"):
     video = generate_master(
@@ -206,11 +166,9 @@ if st.button("GENERA"):
         dur,
         {'sv':10,'pv':80,'ev':20},
         {'start_fade':5,'final_v':100},
-        "16:9 (Orizzontale)",
         True,
         False,
-        6,
-        50
+        6
     )
 
     st.video(video)
