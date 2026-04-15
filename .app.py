@@ -53,6 +53,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     
     h, w = pool_imgs[0].shape[:2]
     
+    # Audio Analysis
     audio_envelope = np.ones(total_f)
     audio_peak = 0.0
     temp_aud_path = None
@@ -73,7 +74,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         prog_bar.progress(f / total_f)
         prog = t / max_limit
         
-        # Logica Transizione Statistica
+        # Logica Transizione Statistica (Slider Percentuali)
         if prog < start_c:
             prob_m1, prob_m2, prob_c = 1.0, 0.0, 0.0
         elif prog > end_c:
@@ -86,7 +87,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             total_p = prob_m1 + prob_m2 + prob_c + 1e-6
             prob_m1, prob_m2, prob_c = prob_m1/total_p, prob_m2/total_p, prob_c/total_p
 
-        # Power Curve & Magnetismo
+        # Power Curve & Magnetismo (Coerente con app 4.0 OK)
         mid = 0.5
         v_base = (k_p['sv'] + (prog/mid)*(k_p['pv']-k_p['sv'])) if prog <= mid else (k_p['pv'] + ((prog-mid)/mid)*(k_p['ev']-k_p['pv']))
         val = (v_base / 100.0) * audio_envelope[f]
@@ -95,14 +96,17 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         dist_mult = 1.0 - np.clip(mag1 + mag2, 0, 0.95)
 
         def pick():
+            # Logic Photo Speed
             interval = max(1, int(fps / photo_speed))
             key = f // interval
             if key in cached_picks and random.random() > 0.1:
                 return cached_picks[key]
+            
             r = random.random()
             if img_m1 is not None and r < prob_m1: res = img_m1
             elif img_m2 is not None and r < (prob_m1 + prob_m2): res = img_m2
             else: res = random.choice(pool_imgs)
+            
             cached_picks[key] = res
             return res
 
@@ -134,7 +138,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
                     shift_v = int(random.uniform(-400, 400) * val * dist_mult)
                     frame[:, s:e] = np.roll(frame[:, s:e], shift_v, axis=0)
         elif orientation == "Mosaico":
-            # --- BLOCCO ORIGINALE 4.0 OK ---
+            # LOGICA MOSAICO A QUADRATI INDIPENDENTI RIPRISTINATA
             blocks_h = get_b(h)
             blocks_w = get_b(w)
             for bh in blocks_h:
@@ -142,7 +146,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
                     target = pick()
                     shift = int(random.uniform(-400, 400) * val * dist_mult)
                     axis = random.choice([0, 1])
-                    frame[bh[0]:bh[1], bw[0]:bw[1]] = np.roll(target[bh[0]:bh[1], bw[0]:bw[1]], shift, axis=axis)
+                    # Estrazione patch e roll locale per effetto mattonella
+                    patch = target[bh[0]:bh[1], bw[0]:bw[1]]
+                    frame[bh[0]:bh[1], bw[0]:bw[1]] = np.roll(patch, shift, axis=axis)
         return frame
 
     clip = VideoClip(make_frame, duration=max_limit)
@@ -155,6 +161,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
     
+    # --- REPORT BRUTALISTA ---
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
 :: STILE: Minimalismo Computazionale / Dissezione Brutalista
