@@ -11,7 +11,7 @@ import librosa
 import gc
 from datetime import datetime
 
-# --- CONFIGURAZIONE PAGINA (Identica all'originale) ---
+# --- CONFIGURAZIONE PAGINA (Struttura Loop507) ---
 st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
 
 def resize_to_format(img, format_type):
@@ -32,13 +32,13 @@ def resize_to_format(img, format_type):
         img_cropped = img[start_y:start_y+new_h, :]
     return cv2.resize(img_cropped, (target_w, target_h))
 
-def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_limit, k_p, o_p1, o_p2, format_type, inc_master, rand_lines, photo_speed, chaos_val):
+def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_limit, k_p, m1_s, m1_e, m2_s, m2_e, format_type, inc_master, rand_lines, photo_speed, chaos_val):
     fps = 24
     total_f = int(max_limit * fps)
     prog_bar = st.progress(0)
     status_text = st.empty()
 
-    # --- ASSET SETUP (Logica solida v7.8) ---
+    # --- CARICAMENTO ASSET ---
     img_m1 = resize_to_format(np.array(Image.open(up_m1).convert("RGB")), format_type) if up_m1 else None
     img_m2 = resize_to_format(np.array(Image.open(up_m2).convert("RGB")), format_type) if up_m2 else None
     t_processed = [resize_to_format(np.array(Image.open(f).convert("RGB")), format_type) for f in up_trit] if up_trit else []
@@ -51,7 +51,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     
     h, w = pool_imgs[0].shape[:2]
     
-    # --- ANALISI AUDIO (RMS Originale) ---
+    # --- ANALISI AUDIO (Fix per i Log: RMS + Loop) ---
     audio_envelope = np.ones(total_f)
     temp_aud_path = None
     if up_aud:
@@ -62,31 +62,33 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         rms = librosa.feature.rms(y=y)[0]
         audio_envelope = np.interp(np.linspace(0, len(rms)-1, total_f), np.arange(len(rms)), rms / (rms.max() + 1e-6))
 
-    # --- MOTORE DI DISSEZIONE ---
+    # --- MOTORE DI RENDERING ---
     def make_frame(t):
         f = int(t * fps)
         if f >= total_f: f = total_f - 1
         prog_bar.progress(f / total_f)
 
-        # Power Curve originale
         prog = t / max_limit
+        # Power Curve originale v7.8
         mid = 0.5
         val = (k_p['sv'] + (prog/mid)*(k_p['pv']-k_p['sv']))/100 if prog <= mid else (k_p['pv'] + ((prog-mid)/mid)*(k_p['ev']-k_p['pv']))/100
         val *= audio_envelope[f]
 
-        # Magnetismo Duale
-        mag1 = (o_p1['start_v'] + prog * (o_p1['final_v'] - o_p1['start_v'])) / 100
-        mag2 = (o_p2['start_v'] + prog * (o_p2['final_v'] - o_p2['start_v'])) / 100
+        # Magnetismo Dinamico (Start/End separati)
+        mag1 = (m1_s + prog * (m1_e - m1_s)) / 100
+        mag2 = (m2_s + prog * (m2_e - m2_s)) / 100
         
-        # Logica di campionamento con distruzione
+        # Logica Pick (Distruzione nel Mix)
         def pick():
             r = random.random()
-            # Se il glitch è alto, distrugge la master a favore del calderone
-            destruction = r * (1 + (val * (chaos_val/100))) 
-            if img_m1 is not None and destruction < mag1: return img_m1
-            if img_m2 is not None and destruction < (mag1 + mag2): return img_m2
+            # Il caos e il glitch "mangiano" la probabilità delle master
+            d_risk = r * (1 + (val * (chaos_val/100)))
+            if img_m1 is not None and d_risk < mag1: return img_m1
+            if img_m2 is not None and d_risk < (mag1 + mag2): return img_m2
+            # Altrimenti pesca dal calderone (mix casuale)
             return pool_imgs[random.randint(0, len(pool_imgs)-1)]
 
+        # Effetto "Foto senza effetto" (Richiesta 1)
         if orientation == "Nessun Effetto": return pick()
 
         frame = np.zeros((h, w, 3), dtype=np.uint8)
@@ -101,7 +103,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
                 c += sw
             return res
 
-        # GEOMETRIE (Mix H+V corretto)
+        # Geometrie (Correzione Mix H+V)
         if orientation == "Orizzontale":
             for s, e in get_b(h):
                 target = pick(); shift = int(random.uniform(-500, 500) * val * dist_mult)
@@ -125,44 +127,44 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
                     frame[bh[0]:bh[1], bv[0]:bv[1]] = np.roll(target[bh[0]:bh[1], bv[0]:bv[1]], shift, axis=random.choice([0,1]))
         return frame
 
-    # --- EXPORT SICURO (Risoluzione Crash Log) ---
+    # --- EXPORT (Fix OSError durate audio) ---
     clip = VideoClip(make_frame, duration=max_limit)
     if temp_aud_path:
         audio_clip = AudioFileClip(temp_aud_path)
-        # Sincronizzazione forzata durata audio/video
-        if audio_clip.duration < max_limit:
+        if audio_clip.duration < max_limit: 
             audio_clip = audio_loop(audio_clip, duration=max_limit)
-        else:
+        else: 
             audio_clip = audio_clip.set_duration(max_limit)
         clip = clip.set_audio(audio_clip)
     
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
-    
-    # Pulizia memoria
     if temp_aud_path: os.remove(temp_aud_path)
     gc.collect()
     return v_out
 
-# --- INTERFACCIA (Identica a 7.8 ma raddoppiata) ---
+# --- INTERFACCIA ---
 st.title("Recursive-Cut-Photo by Loop507 🔪")
 c1, c2, c3 = st.columns([1, 1.2, 1])
 
 with c1:
-    st.subheader("🖼️ Master Assets")
+    st.subheader("🖼️ Assets")
     up_m1 = st.file_uploader("MASTER 1", type=["jpg","png","jpeg"])
-    m1_v = st.slider("M1 Magnetism", 0, 100, (100, 0))
+    m1_s = st.slider("M1 Start Magnetism", 0, 100, 100)
+    m1_e = st.slider("M1 End Magnetism", 0, 100, 0)
     st.divider()
     up_m2 = st.file_uploader("MASTER 2", type=["jpg","png","jpeg"])
-    m2_v = st.slider("M2 Magnetism", 0, 100, (0, 100))
+    m2_s = st.slider("M2 Start Magnetism", 0, 100, 0)
+    m2_e = st.slider("M2 End Magnetism", 0, 100, 100)
     st.divider()
     up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
 
 with c2:
-    st.subheader("✂️ Algoritmo")
+    st.subheader("✂️ Config")
     chaos = st.slider("🌀 Chaos vs Order", 0, 100, 50)
     c_n = chaos / 100.0
+    # Calcolo automatico curve originale
     k_params = {'sv': int(85*(1-c_n)+2), 'pv': min(int(100*(1-c_n)+5),100), 'ev': int(75*(1-c_n)+2)}
     
     speed = st.slider("Speed (fps)", 1, 24, 6)
@@ -171,12 +173,10 @@ with c2:
     mode = st.radio("Geometria", ["Orizzontale", "Verticale", "Mosaico", "Mix (H+V)", "Nessun Effetto"])
 
 with c3:
-    st.subheader("🎬 Rendering")
+    st.subheader("🎬 Render")
     fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
     dur = st.number_input("Durata (sec)", 1, 120, 10)
-    if st.button("🚀 AVVIA"):
-        v = generate_master(up_m1, up_m2, up_t, up_a, mode, lines, dur, k_params, 
-                            {'start_v':m1_v[0],'final_v':m1_v[1]}, {'start_v':m2_v[0],'final_v':m2_v[1]}, 
-                            fmt, True, rand_l, speed, chaos)
+    if st.button("🚀 AVVIA DISSEZIONE"):
+        v = generate_master(up_m1, up_m2, up_t, up_a, mode, lines, dur, k_params, m1_s, m1_e, m2_s, m2_e, fmt, True, rand_l, speed, chaos)
         st.video(v)
         st.download_button("💾 DOWNLOAD", open(v, "rb"), "recursive_cut.mp4")
