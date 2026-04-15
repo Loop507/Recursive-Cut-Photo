@@ -134,11 +134,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
                 frame[s:e, :] = np.roll(target[s:e, :], shift, axis=1)
             for s, e in get_b(w):
                 if random.random() > 0.5:
-                    frame[:, s:e] = np.roll(frame[:, s:e], int(random.uniform(-400, 400) * val * dist_mult), axis=0)
+                    shift_v = int(random.uniform(-400, 400) * val * dist_mult)
+                    frame[:, s:e] = np.roll(frame[:, s:e], shift_v, axis=0)
         elif orientation == "Mosaico":
+            # RIPRISTINATO ESATTAMENTE COME CODICE 4.0 OK
             for bh in get_b(h):
                 for bv in get_b(w):
-                    target = pick(); shift = int(random.uniform(-400, 400) * val * dist_mult)
+                    target = pick()
+                    shift = int(random.uniform(-400, 400) * val * dist_mult)
                     frame[bh[0]:bh[1], bv[0]:bv[1]] = np.roll(target[bh[0]:bh[1], bv[0]:bv[1]], shift, axis=random.choice([0,1]))
         return frame
 
@@ -152,7 +155,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
     
-    # --- REPORT BRUTALISTA (Loop507 Standard) ---
+    # --- REPORT BRUTALISTA ---
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
 :: STILE: Minimalismo Computazionale / Dissezione Brutalista
