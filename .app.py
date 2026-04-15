@@ -1,8 +1,3 @@
-Ora è tutto chiaro! Quel testo è la "firma" estetica di **Loop507**, un manifesto artistico più che un semplice elenco di parametri.
-
-Ho aggiornato il codice per includere esattamente quel blocco di testo nel report scaricabile, mantenendo la struttura tecnica sopra e il tuo "manifesto" sotto, risolvendo anche il problema del reset dell'app.
-
-```python
 import streamlit as st
 import numpy as np
 import cv2
