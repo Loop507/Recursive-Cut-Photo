@@ -11,7 +11,7 @@ import gc
 from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Slice Photo Pro - Loop507", layout="wide")
+st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
 
 def resize_to_format(img, format_type):
     h, w = img.shape[:2]
@@ -31,28 +31,32 @@ def resize_to_format(img, format_type):
         img_cropped = img[start_y:start_y+new_h, :]
     return cv2.resize(img_cropped, (target_w, target_h))
 
-def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_limit, k_p, o_p, format_type, inc_master, rand_lines, photo_speed, chaos_val):
+def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_limit, k_p, o_p1, o_p2, format_type, inc_master, rand_lines, photo_speed, chaos_val):
     fps = 24
     total_f = int(max_limit * fps)
     prog_bar = st.progress(0)
     status_text = st.empty()
 
     # --- ASSET SETUP ---
-    m_img = None
-    m_name = "Assente"
-    if up_master:
-        m_img = resize_to_format(np.array(Image.open(up_master).convert("RGB")), format_type)
-        m_name = up_master.name
+    img_m1 = None
+    if up_m1:
+        img_m1 = resize_to_format(np.array(Image.open(up_m1).convert("RGB")), format_type)
+    
+    img_m2 = None
+    if up_m2:
+        img_m2 = resize_to_format(np.array(Image.open(up_m2).convert("RGB")), format_type)
     
     t_count = len(up_trit) if up_trit else 0
     if up_trit:
         t_processed = [resize_to_format(np.array(Image.open(f).convert("RGB")), format_type) for f in up_trit]
     else:
-        t_processed = [m_img] if m_img is not None else [np.zeros((720, 1280, 3), dtype=np.uint8)]
+        # Fallback se non c'è calderone
+        t_processed = [img_m1] if img_m1 is not None else [np.zeros((720, 1280, 3), dtype=np.uint8)]
 
     pool_imgs = t_processed.copy()
-    if m_img is not None and inc_master:
-        pool_imgs.append(m_img)
+    if inc_master:
+        if img_m1 is not None: pool_imgs.append(img_m1)
+        if img_m2 is not None: pool_imgs.append(img_m2)
     
     h, w = pool_imgs[0].shape[:2]
     
@@ -83,19 +87,18 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         rms_norm = rms / (rms.max() + 1e-6)
         audio_envelope = np.interp(np.linspace(0, len(rms_norm)-1, total_f), np.arange(len(rms_norm)), rms_norm)
 
-    # --- GENERATORE DI FRAME (Motore v7.8) ---
+    # --- GENERATORE DI FRAME (Motore v7.8 - Dual Master Update) ---
     def make_frame(t):
         f = int(t * fps)
         if f >= total_f: f = total_f - 1
         
         prog_bar.progress(f / total_f)
-        status_text.text(f"🚀 Slice Dissection in corso: {f}/{total_f} frames")
+        status_text.text(f"🚀 Dissecting Signal: {f}/{total_f} frames")
 
         curr_bounds_h = get_bounds(h)
         curr_bounds_v = get_bounds(w)
         
         mid = max_limit / 2
-        # Curva di potenza glitch
         if t <= mid:
             val = (k_p['sv'] + (t/mid)*(k_p['pv']-k_p['sv']))/100
         else:
@@ -103,24 +106,36 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
         
         val *= audio_envelope[f]
         
-        # Logica Magnetismo
-        magnet_prob = 0.0
-        dist_mult = 1.0 
-        if m_img is not None and t > o_p['start_fade']:
-            t_fade = (t - o_p['start_fade']) / (max_limit - o_p['start_fade'])
-            magnet_prob = min(1.0, t_fade * (o_p['final_v'] / 100))
-            if (max_limit - t) < 0.25: # Snap finale
-                magnet_prob = 1.0
-                dist_mult = 0.0
-            else:
-                dist_mult = 1.0 - magnet_prob
+        # LOGICA DUAL MAGNETISM (Transizione X)
+        prob_m1 = 0.0
+        prob_m2 = 0.0
+        
+        # Magnetismo Master 1 (Decrescente o controllato)
+        if img_m1 is not None:
+            # Calcolo basato sul tempo
+            prog_m1 = np.clip((t / max_limit), 0, 1)
+            # Inversione: parte da Start V e va verso Final V
+            prob_m1 = (o_p1['start_v']/100) + prog_m1 * ((o_p1['final_v'] - o_p1['start_v'])/100)
+
+        # Magnetismo Master 2 (Crescente o controllato)
+        if img_m2 is not None:
+            prog_m2 = np.clip((t / max_limit), 0, 1)
+            prob_m2 = (o_p2['start_v']/100) + prog_m2 * ((o_p2['final_v'] - o_p2['start_v'])/100)
 
         frames_per_photo = max(1, fps // photo_speed)
         active_pool_img = pool_imgs[(f // frames_per_photo) % len(pool_imgs)]
         frame = np.zeros((h, w, 3), dtype=np.uint8)
 
         def pick():
-            return m_img if (m_img is not None and random.random() < magnet_prob) else active_pool_img
+            r = random.random()
+            if img_m1 is not None and r < prob_m1:
+                return img_m1
+            elif img_m2 is not None and r < (prob_m1 + prob_m2):
+                return img_m2
+            return active_pool_img
+
+        # Applicazione trasformazione
+        dist_mult = 1.0 - np.clip(prob_m1 + prob_m2, 0, 1)
 
         if orientation == "Orizzontale":
             for start, end in curr_bounds_h:
@@ -167,41 +182,31 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
     if temp_aud_path and os.path.exists(temp_aud_path): os.remove(temp_aud_path)
     gc.collect()
 
-    # --- GENERAZIONE REPORT PROFESSIONALE [SLICE_PHOTO] ---
+    # --- REPORT ---
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    total_assets = t_count + (1 if (up_master and inc_master) else 0)
-    
     report_text = f"""
 ╔════════════════════════════════════════════════════════════════╗
-  RECURSIVE CUT PRO v7.8 - OFFICIAL LOG REPORT
+  Recursive-Cut-Photo by Loop507 - OFFICIAL LOG
   Generated on: {ts}
 ╚════════════════════════════════════════════════════════════════╝
 
-[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
+[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DUAL_MASTER_TRANSITION
 
 :: STILE: Minimalismo Computazionale / Dissezione Brutalista
 :: MOTORE: recursive_cut_pro [v7.8]
-:: EFFETTO: Recursive Strand Shift (Reattivo)
-:: ANALISI: RMS Signal Analysis / Dynamic Slicing
-:: PROCESSO: Frammentazione Ricorsiva / Magnetismo Forzato
-
-"L'immagine è stata smontata. Il codice ne ha riscritto la struttura."
+:: TRANSITION: Dual Anchor Point (M1 -> M2)
+:: PROCESSO: Frammentazione Ricorsiva / Cross-Magnetism
 
 ---
 > TECHNICAL LOG SHEET:
-* Asset Pool: {total_assets} foto dissezionate
 * Rendering: {total_f} frame totali generati
 * Geometria: {orientation} @ {strand_val}px
-* Power Curve: Start {k_p['sv']}% | Peak {k_p['pv']}% | End {k_p['ev']}%
-* Magnetismo: Inizio Snap @ {o_p['start_fade']}s (Pull {o_p['final_v']}%)
+* Magnetismo M1: {o_p1['start_v']}% -> {o_p1['final_v']}%
+* Magnetismo M2: {o_p2['start_v']}% -> {o_p2['final_v']}%
 * Audio Peak: {a_info['max']:.4f} normalized
 
 > Regia e Algoritmo: Loop507
-
-#Loop507 #SlicePhoto #StrandShift #DigitalAnatomy #SignalCorruption #BrutalistArt 
-#ComputationalMinimalism #DataDestruction #ExperimentalVideo #GlitchArt
 """
-    
     r_out = tempfile.mktemp(suffix=".txt")
     with open(r_out, "w", encoding="utf-8") as f_rep:
         f_rep.write(report_text)
@@ -212,17 +217,27 @@ def generate_master(up_master, up_trit, up_aud, orientation, strand_val, max_lim
 if 'v_p' not in st.session_state: 
     st.session_state.v_p, st.session_state.r_p = None, None
 
-st.title("Slice Photo Pro 7.8 🔪")
+st.title("Recursive-Cut-Photo by Loop507 🔪")
 col1, col2, col3 = st.columns([1, 1.2, 1])
 
 with col1:
-    st.subheader("🖼️ Input Assets")
-    up_m = st.file_uploader("FOTO MASTER (Punto di arrivo)", type=["jpg","png","jpeg"])
-    up_t = st.file_uploader("CALDERONE (Pool di frammenti)", type=["jpg","png","jpeg"], accept_multiple_files=True)
-    up_a = st.file_uploader("COLONNA SONORA (Analisi RMS)", type=["mp3","wav"])
+    st.subheader("🖼️ Master Assets")
+    
+    st.markdown("**Master 1 (Origine)**")
+    up_m1 = st.file_uploader("FOTO MASTER 1", type=["jpg","png","jpeg"], key="m1")
+    m1_start = st.slider("M1 Magnetismo Inizio %", 0, 100, 100)
+    m1_end = st.slider("M1 Magnetismo Fine %", 0, 100, 0)
+    
     st.divider()
-    m_f = st.slider("Magnetismo Finale %", 0, 100, 100)
-    m_s = st.slider("Inizio Rientro Master (sec)", 0.0, 15.0, 7.0)
+    
+    st.markdown("**Master 2 (Destinazione)**")
+    up_m2 = st.file_uploader("FOTO MASTER 2", type=["jpg","png","jpeg"], key="m2")
+    m2_start = st.slider("M2 Magnetismo Inizio %", 0, 100, 0)
+    m2_end = st.slider("M2 Magnetismo Fine %", 0, 100, 100)
+    
+    st.divider()
+    up_t = st.file_uploader("CALDERONE (Pool frammenti)", type=["jpg","png","jpeg"], accept_multiple_files=True)
+    up_a = st.file_uploader("AUDIO (Analisi RMS)", type=["mp3","wav"])
     inc_m = st.toggle("Includi Master nel Calderone", value=True)
 
 with col2:
@@ -249,13 +264,16 @@ with col3:
     dur = st.number_input("Durata Totale (sec)", 1, 120, 10)
     
     if st.button("🚀 AVVIA DISSEZIONE"):
-        if up_m or up_t:
-            v, r = generate_master(up_m, up_t, up_a, dir_type, lines, dur, k_params, {'start_fade':m_s,'final_v':m_f}, fmt, inc_m, rand_l, photo_speed, chaos)
+        if up_m1 or up_m2 or up_t:
+            v, r = generate_master(up_m1, up_m2, up_t, up_a, dir_type, lines, dur, k_params, 
+                                   {'start_v':m1_start,'final_v':m1_end}, 
+                                   {'start_v':m2_start,'final_v':m2_end}, 
+                                   fmt, inc_m, rand_l, photo_speed, chaos)
             st.session_state.v_p, st.session_state.r_p = v, r
         else:
-            st.error("Errore: Carica almeno una foto nel Master o nel Calderone.")
+            st.error("Errore: Carica almeno un asset.")
 
     if st.session_state.v_p:
         st.video(st.session_state.v_p)
-        st.download_button("💾 SCARICA VIDEO", open(st.session_state.v_p, "rb"), "slice_dissection.mp4")
-        st.download_button("📄 SCARICA REPORT TECNICO", open(st.session_state.r_p, "rb"), "slice_report.txt")
+        st.download_button("💾 SCARICA VIDEO", open(st.session_state.v_p, "rb"), "recursive_cut.mp4")
+        st.download_button("📄 SCARICA REPORT TECNICO", open(st.session_state.r_p, "rb"), "recursive_report.txt")
