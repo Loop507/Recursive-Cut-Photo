@@ -212,4 +212,3 @@ with c3:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=450)
             st.download_button("📄 SCARICA REPORT", r_txt, "report_dissection.txt")
-```
