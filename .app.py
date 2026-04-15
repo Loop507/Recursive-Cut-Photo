@@ -53,7 +53,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     
     h, w = pool_imgs[0].shape[:2]
     
-    # Audio Analysis
     audio_envelope = np.ones(total_f)
     audio_peak = 0.0
     temp_aud_path = None
@@ -100,12 +99,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             key = f // interval
             if key in cached_picks and random.random() > 0.1:
                 return cached_picks[key]
-            
             r = random.random()
             if img_m1 is not None and r < prob_m1: res = img_m1
             elif img_m2 is not None and r < (prob_m1 + prob_m2): res = img_m2
             else: res = random.choice(pool_imgs)
-            
             cached_picks[key] = res
             return res
 
@@ -137,12 +134,15 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
                     shift_v = int(random.uniform(-400, 400) * val * dist_mult)
                     frame[:, s:e] = np.roll(frame[:, s:e], shift_v, axis=0)
         elif orientation == "Mosaico":
-            # RIPRISTINATO ESATTAMENTE COME CODICE 4.0 OK
-            for bh in get_b(h):
-                for bv in get_b(w):
+            # --- BLOCCO ORIGINALE 4.0 OK ---
+            blocks_h = get_b(h)
+            blocks_w = get_b(w)
+            for bh in blocks_h:
+                for bw in blocks_w:
                     target = pick()
                     shift = int(random.uniform(-400, 400) * val * dist_mult)
-                    frame[bh[0]:bh[1], bv[0]:bv[1]] = np.roll(target[bh[0]:bh[1], bv[0]:bv[1]], shift, axis=random.choice([0,1]))
+                    axis = random.choice([0, 1])
+                    frame[bh[0]:bh[1], bw[0]:bw[1]] = np.roll(target[bh[0]:bh[1], bw[0]:bw[1]], shift, axis=axis)
         return frame
 
     clip = VideoClip(make_frame, duration=max_limit)
@@ -155,7 +155,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
     
-    # --- REPORT BRUTALISTA ---
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
 :: STILE: Minimalismo Computazionale / Dissezione Brutalista
