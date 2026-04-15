@@ -1,8 +1,3 @@
-Perfetto, ho aggiornato il blocco del report per riflettere esattamente quel nuovo schema tecnico e artistico. Ho mantenuto i calcoli dinamici (come il numero di frame, la data, i magnetismi e i valori della Power Curve) in modo che il report si aggiorni correttamente ad ogni video che crei, mantenendo però lo stile **[SLICE_PHOTO_DISSECTION]**.
-
-Ecco il codice finale completo e pulito:
-
-```python
 import streamlit as st
 import numpy as np
 import cv2
