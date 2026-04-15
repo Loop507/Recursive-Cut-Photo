@@ -14,7 +14,7 @@ from datetime import datetime
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
 
-# --- SESSION STATE (Fondamentale per non far sparire il report al download) ---
+# --- SESSION STATE (Per non perdere i file dopo il rendering) ---
 if 'v_path' not in st.session_state: st.session_state.v_path = None
 if 'r_path' not in st.session_state: st.session_state.r_path = None
 
@@ -159,7 +159,7 @@ M2 MAG: {m2_s}% -> {m2_e}%
     gc.collect()
     return v_out, r_out
 
-# --- INTERFACCIA ---
+# --- UI ---
 st.title("Recursive-Cut-Photo by Loop507 🔪")
 c1, c2, c3 = st.columns([1, 1.2, 1])
 
@@ -197,7 +197,6 @@ with c3:
         st.session_state.v_path = v
         st.session_state.r_path = r
 
-    # Visualizzazione persistente
     if st.session_state.v_path:
         st.video(st.session_state.v_path)
         st.download_button("💾 DOWNLOAD VIDEO", open(st.session_state.v_path, "rb"), "video_decomposed.mp4")
@@ -205,4 +204,3 @@ with c3:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 REPORT", r_txt, height=400)
             st.download_button("📄 SCARICA REPORT", r_txt, "report_decomposition.txt")
-```
