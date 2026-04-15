@@ -1,3 +1,8 @@
+Perfetto, ho aggiornato il blocco del report per riflettere esattamente quel nuovo schema tecnico e artistico. Ho mantenuto i calcoli dinamici (come il numero di frame, la data, i magnetismi e i valori della Power Curve) in modo che il report si aggiorni correttamente ad ogni video che crei, mantenendo però lo stile **[SLICE_PHOTO_DISSECTION]**.
+
+Ecco il codice finale completo e pulito:
+
+```python
 import streamlit as st
 import numpy as np
 import cv2
@@ -14,7 +19,7 @@ from datetime import datetime
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
 
-# --- SESSION STATE (Per non perdere i file dopo il rendering) ---
+# --- SESSION STATE (Per evitare il reset dell'app al download) ---
 if 'v_path' not in st.session_state: st.session_state.v_path = None
 if 'r_path' not in st.session_state: st.session_state.r_path = None
 
@@ -47,15 +52,17 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     t_processed = [resize_to_format(np.array(Image.open(f).convert("RGB")), format_type) for f in up_trit] if up_trit else []
     
     pool_imgs = t_processed.copy()
+    num_assets = len(pool_imgs)
     if inc_master:
-        if img_m1 is not None: pool_imgs.append(img_m1)
-        if img_m2 is not None: pool_imgs.append(img_m2)
+        if img_m1 is not None: pool_imgs.append(img_m1); num_assets += 1
+        if img_m2 is not None: pool_imgs.append(img_m2); num_assets += 1
     if not pool_imgs: pool_imgs = [np.zeros((720, 1280, 3), dtype=np.uint8)]
     
     h, w = pool_imgs[0].shape[:2]
     
-    # Audio Fix
+    # Audio Analysis
     audio_envelope = np.ones(total_f)
+    audio_peak = 0.0
     temp_aud_path = None
     if up_aud:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t_aud:
@@ -63,6 +70,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             temp_aud_path = t_aud.name
         y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
         rms = librosa.feature.rms(y=y)[0]
+        audio_peak = float(np.max(rms))
         audio_envelope = np.interp(np.linspace(0, len(rms)-1, total_f), np.arange(len(rms)), rms / (rms.max() + 1e-6))
 
     def make_frame(t):
@@ -130,28 +138,32 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
     
-    # --- IL TUO REPORT ORIGINALE INTEGRATO ---
-    report_text = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
+    # --- NUOVO REPORT [SLICE_PHOTO_DISSECTION] ---
+    report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
-:: STILE: Minimalismo Computazionale / Glitch Brutalista
-:: MOTORE: video_decomposed [01.01]
-:: AUDIO: 48 kHz / Float a 32 bit / Punto di Clipping
-:: PROCESSO: Collasso Ricorsivo
+:: STILE: Minimalismo Computazionale / Dissezione Brutalista
+:: MOTORE: recursive_cut_pro [v7.8]
+:: EFFETTO: Recursive Strand Shift (Reattivo)
+:: ANALISI: RMS Signal Analysis / Dynamic Slicing
+:: PROCESSO: Frammentazione Ricorsiva / Magnetismo Forzato
 
-"Non è montaggio. È anatomia di un segnale corrotto."
+"L'immagine è stata smontata. Il codice ne ha riscritto la struttura."
+
+---
+> TECHNICAL LOG SHEET:
+* Asset Pool: {num_assets} foto dissezionate
+* Rendering: {total_f} frame totali generati
+* Geometria: {orientation} @ {strand_val}px
+* Power Curve: Start {k_p['sv']}% | Peak {k_p['pv']}% | End {k_p['ev']}%
+* Magnetismo M1: Inizio {m1_s}% -> Fine {m1_e}%
+* Magnetismo M2: Inizio {m2_s}% -> Fine {m2_e}%
+* Audio Peak: {audio_peak:.4f} normalized
+* Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 > Regia e Algoritmo: Loop507
 
-DATI TECNICI DI SESSIONE:
---------------------------------
-DATA: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-DURATA: {max_limit}s | FORMATO: {format_type}
-CHAOS: {chaos_val}% | STRAND: {strand_val}px
-M1 MAG: {m1_s}% -> {m1_e}%
-M2 MAG: {m2_s}% -> {m2_e}%
---------------------------------
-
-#Loop507 #DataNoise #Decomposition #GlitchArt #AudioVisual #NoiseMusic #AlgorithmicVideo #Brutalist #SoundDesign #ComputationalMinimalism #SignalCorruption #RecursiveCollapse #NewMediaArt"""
+#Loop507 #SlicePhoto #StrandShift #DigitalAnatomy #SignalCorruption #BrutalistArt 
+#ComputationalMinimalism #DataDestruction #ExperimentalVideo #GlitchArt"""
 
     r_out = tempfile.mktemp(suffix=".txt")
     with open(r_out, "w") as f: f.write(report_text)
@@ -159,7 +171,7 @@ M2 MAG: {m2_s}% -> {m2_e}%
     gc.collect()
     return v_out, r_out
 
-# --- UI ---
+# --- INTERFACCIA STREAMLIT ---
 st.title("Recursive-Cut-Photo by Loop507 🔪")
 c1, c2, c3 = st.columns([1, 1.2, 1])
 
@@ -197,10 +209,12 @@ with c3:
         st.session_state.v_path = v
         st.session_state.r_path = r
 
+    # Visualizzazione persistente post-rendering
     if st.session_state.v_path:
         st.video(st.session_state.v_path)
-        st.download_button("💾 DOWNLOAD VIDEO", open(st.session_state.v_path, "rb"), "video_decomposed.mp4")
+        st.download_button("💾 DOWNLOAD VIDEO", open(st.session_state.v_path, "rb"), "video_dissection.mp4")
         if st.session_state.r_path:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
-            st.text_area("📄 REPORT", r_txt, height=400)
-            st.download_button("📄 SCARICA REPORT", r_txt, "report_decomposition.txt")
+            st.text_area("📄 TECHNICAL REPORT", r_txt, height=450)
+            st.download_button("📄 SCARICA REPORT", r_txt, "report_dissection.txt")
+```
