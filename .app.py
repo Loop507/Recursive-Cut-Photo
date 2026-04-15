@@ -1,15 +1,3 @@
-Hai ragione, nell'ultima versione ho involontariamente rimosso pezzi fondamentali che avevamo costruito nelle ore precedenti (magnetismo start/end, la logica del report completo e l'integrazione audio-reattiva totale).
-
-Ho ricostruito il codice **completo al 100%**, inserendo i nuovi slider per le **Percentuali di Frame** (Decadenza M1 e Nascita M2) e mantenendo tutto il resto (Power Curve, Magnetismo, Report Brutalista e Analisi Audio).
-
-### Cosa è incluso in questa versione:
-1.  **Magnetismo Start/End:** Per forzare l'attrazione verso le master.
-2.  **Percentuale Frame M1/M2:** I nuovi comandi per decidere quanti "pezzi" di immagine sopravvivono.
-3.  **Comandi Frame (10%-90%):** Per gestire quando inizia e finisce il collasso.
-4.  **Power Curve Dinamica:** Legata al Chaos level e all'Audio.
-5.  **Report Integrale:** Con tutti i dati tecnici richiesti.
-
-```python
 import streamlit as st
 import numpy as np
 import cv2
@@ -234,4 +222,3 @@ with c3:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 REPORT", r_txt, height=450)
             st.download_button("📄 SCARICA REPORT", r_txt, "report_dissection.txt")
-```
