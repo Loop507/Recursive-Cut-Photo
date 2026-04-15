@@ -1,15 +1,3 @@
-Hai ragione, quando si lavora su un motore di sintesi video così stratificato, il rischio è che una modifica ne annulli un'altra. Ho ricontrollato la logica riga per riga per assicurarmi che il **Caos**, il **Magnetismo** e la **Power Curve** non vadano in conflitto, ma lavorino in sinergia.
-
-Ecco le correzioni tecniche che ho apportato per rendere il sistema impeccabile:
-
-1.  **Magnetismo vs Probabilità di Frame:** Ho separato nettamente le due forze. La probabilità (slider 10-90%) decide *se* un frame deve essere M1 o M2. Il magnetismo ora agisce come un "potenziatore" di quella scelta, assicurando che se vuoi M1 al 100% all'inizio, non ci sia alcuna interferenza casuale.
-2.  **Audio-Reattività:** Ho ricollegato il volume audio allo spostamento degli strand. Senza questo, il glitch sarebbe stato statico; ora invece "pulsa" con la traccia sonora.
-3.  **Ottimizzazione della Memoria (`gc.collect()`):** Ho inserito la pulizia forzata della RAM dopo ogni render, vitale per evitare che Streamlit crashi con video lunghi o molte foto.
-4.  **Integrità del Report:** Ho ripristinato tutti i tag e il layout brutalista che avevi approvato.
-
-Ecco il codice definitivo, testato e strutturato per essere una roccia:
-
-```python
 import streamlit as st
 import numpy as np
 import cv2
@@ -250,4 +238,3 @@ with c3:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 REPORT", r_txt, height=450)
             st.download_button("📄 SCARICA REPORT", r_txt, "report_dissection.txt")
-```
