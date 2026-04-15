@@ -66,7 +66,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         audio_peak = float(np.max(rms))
         audio_envelope = np.interp(np.linspace(0, len(rms)-1, total_f), np.arange(len(rms)), rms / (rms.max() + 1e-6))
 
-    # Cache per Photo Speed
     cached_picks = {}
 
     def make_frame(t):
@@ -97,10 +96,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         dist_mult = 1.0 - np.clip(mag1 + mag2, 0, 0.95)
 
         def pick():
-            # Controllo Velocità Foto (Speed)
             interval = max(1, int(fps / photo_speed))
             key = f // interval
-            if key in cached_picks and random.random() > 0.2: # Leggera variazione per non essere statico
+            if key in cached_picks and random.random() > 0.1:
                 return cached_picks[key]
             
             r = random.random()
@@ -137,6 +135,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             for s, e in get_b(w):
                 if random.random() > 0.5:
                     frame[:, s:e] = np.roll(frame[:, s:e], int(random.uniform(-400, 400) * val * dist_mult), axis=0)
+        elif orientation == "Mosaico":
+            for bh in get_b(h):
+                for bv in get_b(w):
+                    target = pick(); shift = int(random.uniform(-400, 400) * val * dist_mult)
+                    frame[bh[0]:bh[1], bv[0]:bv[1]] = np.roll(target[bh[0]:bh[1], bv[0]:bv[1]], shift, axis=random.choice([0,1]))
         return frame
 
     clip = VideoClip(make_frame, duration=max_limit)
@@ -166,9 +169,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
 * Rendering: {total_f} frame totali generati
 * Geometria: {orientation} @ {strand_val}px
 * Power Curve: Start {k_p['sv']}% | Peak {k_p['pv']}% | End {k_p['ev']}%
-* Magnetismo M1: {m1_s}% -> {m1_e}%
-* Magnetismo M2: {m2_s}% -> {m2_e}%
-* Caos Range: {int(start_c*100)}% -> {int(end_c*100)}%
+* Magnetismo: Inizio Snap @ {max_limit * start_c:.1f}s (Pull {m1_s}%)
 * Audio Peak: {audio_peak:.4f} normalized
 
 > Regia e Algoritmo: Loop507
@@ -214,7 +215,7 @@ with c2:
     speed = st.slider("Photo Speed (fps)", 1, 24, 6)
     lines = st.slider("Strand (px)", 1, 500, 45)
     rand_l = st.toggle("Dynamic Slicing", value=True)
-    mode = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Nessun Effetto"])
+    mode = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
 
 with c3:
     st.subheader("🎬 Rendering")
