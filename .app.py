@@ -36,7 +36,7 @@ def resize_to_format(img, format_type):
     return cv2.resize(img_cropped, (target_w, target_h))
 
 def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_limit, k_p, m1_s, m1_e, m2_s, m2_e, p_m1_ctrl, p_m2_ctrl, start_c, end_c, format_type, inc_master, rand_lines, photo_speed, chaos_val,
-                    beat_strength, onset_photo_switch, beat_decay, beat_cache_sensitivity):
+                    beat_strength, onset_photo_switch, beat_decay, beat_cache_sensitivity, rhythm_tracking):
     fps = 24
     total_f = int(max_limit * fps)
     prog_bar = st.progress(0)
@@ -56,11 +56,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     
     # --- AUDIO ANALYSIS ---
     audio_envelope = np.ones(total_f)
-    beat_envelope = np.zeros(total_f)   # NUOVO: picchi sui beat
-    onset_envelope = np.zeros(total_f) # NUOVO: picchi sugli onset
+    beat_envelope = np.zeros(total_f)
+    onset_envelope = np.zeros(total_f)
+    rhythm_envelope = np.ones(total_f)   # NUOVO: segue lento/veloce del brano
     audio_peak = 0.0
     beat_count = 0
-    onset_count = 0
     temp_aud_path = None
 
     if up_aud:
@@ -68,8 +68,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             t_aud.write(up_aud.read())
             temp_aud_path = t_aud.name
         y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
-        
-        # RMS esistente (invariato)
+
+        # RMS — invariato
         rms = librosa.feature.rms(y=y)[0]
         audio_peak = float(np.max(rms))
         audio_envelope = np.interp(
@@ -77,32 +77,54 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             np.arange(len(rms)), rms / (rms.max() + 1e-6)
         )
 
-        # NUOVO: Beat Detection (solo se beat_strength > 0)
+        # Beat + Onset — invariati
         if beat_strength > 0:
-            tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+            _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
             beat_times = librosa.frames_to_time(beat_frames, sr=sr)
             beat_count = len(beat_times)
-            # Costruisce envelope con decay esponenziale per ogni beat
-            decay_rate = 1.0 - (beat_decay / 100.0) * 0.98  # da 0.02 a 1.0
             for bt in beat_times:
                 bf = int(bt * fps)
-                if bf < total_f:
-                    # Spike iniziale + decay sui frame successivi
-                    for df in range(min(int(fps * 0.5), total_f - bf)):  # max 0.5s di decay
-                        beat_envelope[bf + df] = max(
-                            beat_envelope[bf + df],
-                            decay_rate ** df
-                        )
+                decay_rate = 1.0 - (beat_decay / 100.0) * 0.98
+                for df in range(min(int(fps * 0.5), total_f - bf)):
+                    beat_envelope[bf + df] = max(beat_envelope[bf + df], decay_rate ** df)
 
-        # NUOVO: Onset Detection (solo se onset_photo_switch > 0)
         if onset_photo_switch > 0:
             onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
             onset_times = librosa.frames_to_time(onset_frames, sr=sr)
-            onset_count = len(onset_times)
             for ot in onset_times:
                 of = int(ot * fps)
                 if of < total_f:
                     onset_envelope[of] = 1.0
+
+        # NUOVO: Rhythm Tracking (tempogram + spectral flux)
+        if rhythm_tracking:
+            # Tempogram: misura la velocità ritmica locale nel tempo
+            # Valori alti = sezione veloce, valori bassi = sezione lenta
+            tempogram = librosa.feature.tempogram(y=y, sr=sr)
+            # Prendiamo il BPM dominante per ogni finestra temporale
+            tempo_local = tempogram.max(axis=0).astype(float)
+            tempo_local = tempo_local / (tempo_local.max() + 1e-6)
+
+            # Spectral Flux: quanto cambia lo spettro frame per frame
+            # Coglie cambi di timbro/attacco anche su musica non percussiva
+            stft = np.abs(librosa.stft(y))
+            flux = np.sqrt(np.sum(np.diff(stft, axis=1) ** 2, axis=0))
+            flux = flux / (flux.max() + 1e-6)
+
+            # Combina i due: tempogram porta la velocità, flux porta la reattività
+            min_len = min(len(tempo_local), len(flux))
+            combined = (tempo_local[:min_len] * 0.5 + flux[:min_len] * 0.5)
+            combined = combined / (combined.max() + 1e-6)
+
+            # Interpolazione a total_f frame
+            rhythm_envelope = np.interp(
+                np.linspace(0, len(combined)-1, total_f),
+                np.arange(len(combined)), combined
+            )
+            # Smoothing leggero per evitare salti bruschi
+            kernel = np.ones(fps // 2) / (fps // 2)
+            rhythm_envelope = np.convolve(rhythm_envelope, kernel, mode='same')
+            rhythm_envelope = np.clip(rhythm_envelope, 0.15, 1.0)  # floor a 0.15: mai fermo del tutto
 
     cached_picks = {}
 
@@ -112,7 +134,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         prog_bar.progress(f / total_f)
         prog = t / max_limit
         
-        # Logica Transizione Statistica (invariata)
+        # Transizione statistica — invariata
         if prog < start_c:
             prob_m1, prob_m2, prob_c = 1.0, 0.0, 0.0
         elif prog > end_c:
@@ -125,12 +147,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             total_p = prob_m1 + prob_m2 + prob_c + 1e-6
             prob_m1, prob_m2, prob_c = prob_m1/total_p, prob_m2/total_p, prob_c/total_p
 
-        # Power Curve & Magnetismo (invariato)
+        # Power Curve — invariata
         mid = 0.5
         v_base = (k_p['sv'] + (prog/mid)*(k_p['pv']-k_p['sv'])) if prog <= mid else (k_p['pv'] + ((prog-mid)/mid)*(k_p['ev']-k_p['pv']))
-        val = (v_base / 100.0) * audio_envelope[f]
+        
+        # val ora include anche rhythm_envelope: lento=quieto, veloce=agitato
+        val = (v_base / 100.0) * audio_envelope[f] * rhythm_envelope[f]
 
-        # NUOVO: Beat amplifica val in modo indipendente
+        # Beat amplifica val sui colpi — invariato
         if beat_strength > 0:
             val = val * (1.0 + beat_envelope[f] * (beat_strength / 100.0))
 
@@ -139,25 +163,21 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         dist_mult = 1.0 - np.clip(mag1 + mag2, 0, 0.95)
 
         def pick():
-            interval = max(1, int(fps / photo_speed))
+            # Photo speed modulata dal ritmo: sezioni veloci cambiano foto più spesso
+            speed_mod = photo_speed * rhythm_envelope[f] if rhythm_tracking else photo_speed
+            interval = max(1, int(fps / speed_mod))
             key = f // interval
-
-            # NUOVO: Onset forza cambio foto con probabilità onset_photo_switch
-            # Beat Cache Sensitivity controlla quanto aggressivamente si invalida la cache
             force_change = (
                 onset_envelope[f] > 0 and
                 random.random() < (onset_photo_switch / 100.0) and
                 random.random() < (beat_cache_sensitivity / 100.0)
             )
-
             if key in cached_picks and not force_change and random.random() > 0.1:
                 return cached_picks[key]
-
             r = random.random()
             if img_m1 is not None and r < prob_m1: res = img_m1
             elif img_m2 is not None and r < (prob_m1 + prob_m2): res = img_m2
             else: res = random.choice(pool_imgs)
-
             cached_picks[key] = res
             return res
 
@@ -210,13 +230,12 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
     
-    # --- REPORT ---
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
 :: STILE: Minimalismo Computazionale / Dissezione Brutalista
-:: MOTORE: recursive_cut_pro [v7.9]
+:: MOTORE: recursive_cut_pro [v8.0]
 :: EFFETTO: Recursive Strand Shift (Reattivo)
-:: ANALISI: RMS + Beat Detection + Onset Detection
+:: ANALISI: RMS + Beat Detection + Onset Detection + Rhythm Tracking
 :: PROCESSO: Frammentazione Ricorsiva / Magnetismo Forzato
 
 "L'immagine è stata smontata. Il codice ne ha riscritto la struttura."
@@ -230,7 +249,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
 * Magnetismo: Inizio Snap @ {max_limit * start_c:.1f}s (Pull {m1_s}%)
 * Audio Peak: {audio_peak:.4f} normalized
 * Beat rilevati: {beat_count} | Beat Strength: {beat_strength}% | Beat Decay: {beat_decay}%
-* Onset rilevati: {onset_count} | Onset Photo Switch: {onset_photo_switch}% | Cache Sensitivity: {beat_cache_sensitivity}%
+* Onset Photo Switch: {onset_photo_switch}% | Cache Sensitivity: {beat_cache_sensitivity}%
+* Rhythm Tracking: {'ON — Tempogram + Spectral Flux' if rhythm_tracking else 'OFF'}
 
 > Regia e Algoritmo: Loop507
 
@@ -282,14 +302,15 @@ with c3:
     fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
     dur = st.number_input("Durata (sec)", 1, 120, 10)
 
-    # --- SEZIONE BEAT/ONSET (nuova, indipendente) ---
     st.divider()
     st.subheader("🥁 Sync Audio Ritmico")
     st.caption("Tutti a zero = comportamento identico all'originale")
-    beat_strength = st.slider("Beat Strength (intensità shift sui beat)", 0, 100, 0)
-    beat_decay = st.slider("Beat Decay (durata eco del beat)", 0, 100, 50)
-    onset_photo_switch = st.slider("Onset Photo Switch (cambio foto sugli onset)", 0, 100, 0)
-    beat_cache_sensitivity = st.slider("Beat Cache Sensitivity (aggressività reset cache)", 0, 100, 30)
+    beat_strength = st.slider("Beat Strength", 0, 100, 0)
+    beat_decay = st.slider("Beat Decay", 0, 100, 50)
+    onset_photo_switch = st.slider("Onset Photo Switch", 0, 100, 0)
+    beat_cache_sensitivity = st.slider("Beat Cache Sensitivity", 0, 100, 30)
+    rhythm_tracking = st.toggle("🎼 Segui il Ritmo del Brano", value=False,
+        help="Attiva per musica che cambia velocità (lento→veloce). Usa Tempogram + Spectral Flux per modulare le strisce e i cambi foto in base all'energia ritmica reale del brano.")
     st.divider()
 
     if st.button("🚀 AVVIA DISSEZIONE"):
@@ -297,7 +318,7 @@ with c3:
             up_m1, up_m2, up_t, up_a, mode, lines, dur, k_params,
             m1_s, m1_e, m2_s, m2_e, p_m1, p_m2, start_t, end_t,
             fmt, inc_m, rand_l, speed, chaos,
-            beat_strength, onset_photo_switch, beat_decay, beat_cache_sensitivity
+            beat_strength, onset_photo_switch, beat_decay, beat_cache_sensitivity, rhythm_tracking
         )
         st.session_state.v_path, st.session_state.r_path = v, r
 
