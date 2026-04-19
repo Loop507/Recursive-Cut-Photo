@@ -308,13 +308,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None,
                          fps=fps, bitrate="5000k", logger=None)
 
+    rhythm_on = beat_sync and GENRE_PRESETS[genre]["rhythm"]
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
-
 :: MOTORE: recursive_cut_pro [v9.0]
 :: EFFETTO: Recursive Strand Shift
 :: ANALISI: RMS / Beat Sync / Rhythm Tracking
+:: PROCESSO: Frammentazione Ricorsiva
+"L'immagine e' stata smontata. Il codice ne ha riscritto la struttura."
 
----
 > TECHNICAL LOG SHEET:
 * Asset Pool: {len(pool_imgs)} foto
 * Rendering: {total_f} frame @ {fps}fps
@@ -322,12 +323,13 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
 * Transizione: {int(start_c*100)}% — {int(end_c*100)}%
 * Audio Peak: {audio_peak:.4f}
-* Beat Sync: {'ON — ' + genre + ' — ' + str(beat_count) + ' beat — Rhythm: ' + ('ON' if GENRE_PRESETS[genre]["rhythm"] else 'OFF') if beat_sync else 'OFF'}
-* Power Curve: {'BYPASSED' if beat_sync and GENRE_PRESETS[genre]["rhythm"] else 'ON'}
+* Beat Sync: {'ON' if beat_sync else 'OFF'}
+* Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
 
 > Regia e Algoritmo: Loop507
 
-#Loop507 #SlicePhoto #StrandShift #GlitchArt #ExperimentalVideo"""
+#glitchart #slicephoto #strandshift #digitalanatomy #signalcorruption #brutalistart
+#computationalminimalism #datadestruction #experimentalvideo"""
 
     r_out = tempfile.mktemp(suffix=".txt")
     with open(r_out, "w") as f: f.write(report_text)
