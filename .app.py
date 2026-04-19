@@ -17,13 +17,14 @@ if 'v_path' not in st.session_state: st.session_state.v_path = None
 if 'r_path' not in st.session_state: st.session_state.r_path = None
 
 # --- PRESET GENERE ---
+# rhythm: True = rhythm tracking attivo per quel genere (implicito, non mostrato all'utente)
 GENRE_PRESETS = {
-    "Techno / House":  {"beat_strength": 70, "beat_decay": 20, "onset": 0,  "cache": 20},
-    "Orchestrale":     {"beat_strength": 30, "beat_decay": 80, "onset": 40, "cache": 25},
-    "Pop / Soul":      {"beat_strength": 50, "beat_decay": 50, "onset": 60, "cache": 35},
-    "Glitch / Noise":  {"beat_strength": 90, "beat_decay": 10, "onset": 80, "cache": 70},
-    "Drone / Pad":     {"beat_strength":  0, "beat_decay": 60, "onset": 20, "cache": 15},
-    "Hip Hop / Jazz":  {"beat_strength": 60, "beat_decay": 35, "onset": 50, "cache": 30},
+    "Techno / House":  {"beat_strength": 70, "beat_decay": 20, "onset":  0, "cache": 20, "rhythm": False},
+    "Orchestrale":     {"beat_strength": 20, "beat_decay": 80, "onset": 40, "cache": 25, "rhythm": True},
+    "Pop / Soul":      {"beat_strength": 50, "beat_decay": 50, "onset": 60, "cache": 35, "rhythm": False},
+    "Glitch / Noise":  {"beat_strength": 90, "beat_decay": 10, "onset": 80, "cache": 70, "rhythm": True},
+    "Drone / Pad":     {"beat_strength":  0, "beat_decay": 60, "onset": 20, "cache": 15, "rhythm": True},
+    "Hip Hop / Jazz":  {"beat_strength": 60, "beat_decay": 35, "onset": 50, "cache": 30, "rhythm": False},
 }
 
 def resize_to_format(img, format_type, half_res=False):
@@ -50,8 +51,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     chaos_val, photo_speed, format_type,
                     start_c, end_c,
                     rand_lines,
-                    beat_sync, genre,
-                    rhythm_tracking):
+                    beat_sync, genre):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -104,6 +104,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             bd = p["beat_decay"]
             op = p["onset"]
             bc = p["cache"]
+            rhythm_tracking = p["rhythm"]
 
             if bs > 0:
                 _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
@@ -123,8 +124,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         onset_envelope[of] = 1.0
         else:
             bs, bd, op, bc = 0, 50, 0, 30
+            rhythm_tracking = False
 
-        # Rhythm Tracking
+        # Rhythm Tracking — attivato dal preset genere
         if rhythm_tracking:
             tempogram = librosa.feature.tempogram(y=y, sr=sr)
             tempo_local = tempogram.max(axis=0).astype(float)
@@ -172,7 +174,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         has_masters = (img_m1 is not None) and (img_m2 is not None)
 
         if has_masters:
-            if prog < start_c:
+            # Margine di tolleranza per valori estremi (0% e 100%)
+            in_m1_zone = prog <= start_c or start_c <= 0.01
+            in_m2_zone = prog >= end_c or end_c >= 0.99
+
+            if in_m1_zone and not in_m2_zone:
                 # Solo M1
                 def pick():
                     key = f // max(1, int(fps / photo_speed))
@@ -180,7 +186,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         return cached_picks[key]
                     cache_set(key, img_m1)
                     return img_m1
-            elif prog > end_c:
+            elif in_m2_zone and prog >= end_c:
                 # Solo M2
                 def pick():
                     key = f // max(1, int(fps / photo_speed))
@@ -190,7 +196,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     return img_m2
             else:
                 # Transizione: mix M1, Calderone, M2 in base a chaos e posizione
-                t_rel = (prog - start_c) / (end_c - start_c)
+                span = end_c - start_c if end_c > start_c else 1e-6
+                t_rel = np.clip((prog - start_c) / span, 0.0, 1.0)
                 def pick():
                     interval = max(1, int(fps / photo_speed))
                     key = f // interval
@@ -315,9 +322,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
 * Transizione: {int(start_c*100)}% — {int(end_c*100)}%
 * Audio Peak: {audio_peak:.4f}
-* Beat Sync: {'ON — ' + genre + ' — ' + str(beat_count) + ' beat' if beat_sync else 'OFF'}
-* Rhythm Tracking: {'ON' if rhythm_tracking else 'OFF'}
-* Power Curve: {'BYPASSED' if rhythm_tracking else 'ON'}
+* Beat Sync: {'ON — ' + genre + ' — ' + str(beat_count) + ' beat — Rhythm: ' + ('ON' if GENRE_PRESETS[genre]["rhythm"] else 'OFF') if beat_sync else 'OFF'}
+* Power Curve: {'BYPASSED' if beat_sync and GENRE_PRESETS[genre]["rhythm"] else 'ON'}
 
 > Regia e Algoritmo: Loop507
 
@@ -372,15 +378,12 @@ with c3:
 
     st.divider()
 
-    # Sync audio — toggle + preset genere
-    beat_sync = st.toggle("🥁 A tempo di musica", value=False,
-        help="Attiva solo se hai caricato un audio.")
+    # Sync audio — un solo toggle + preset genere
+    beat_sync = st.toggle("🎵 A tempo di musica", value=False,
+        help="Attiva solo se hai caricato un audio. Il genere determina automaticamente beat, onset e rhythm tracking.")
     genre = "Techno / House"
     if beat_sync:
         genre = st.selectbox("Genere", list(GENRE_PRESETS.keys()))
-
-    rhythm_tracking = st.toggle("🎼 Segui il ritmo del brano", value=False,
-        help="Bypassa la Power Curve. Le strisce rallentano e accelerano con il brano.")
 
     st.divider()
 
@@ -391,8 +394,7 @@ with c3:
             chaos, speed, fmt,
             start_t, end_t,
             rand_l,
-            beat_sync, genre,
-            rhythm_tracking
+            beat_sync, genre
         )
         st.session_state.v_path, st.session_state.r_path = v, r
 
