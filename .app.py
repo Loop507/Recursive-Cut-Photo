@@ -9,7 +9,6 @@ import random
 import os
 import librosa
 import gc
-from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
@@ -17,59 +16,80 @@ st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
 if 'v_path' not in st.session_state: st.session_state.v_path = None
 if 'r_path' not in st.session_state: st.session_state.r_path = None
 
-def resize_to_format(img, format_type):
-    h, w = img.shape[:2]
+# --- PRESET GENERE ---
+GENRE_PRESETS = {
+    "Techno / House":  {"beat_strength": 70, "beat_decay": 20, "onset": 0,  "cache": 20},
+    "Orchestrale":     {"beat_strength": 30, "beat_decay": 80, "onset": 40, "cache": 25},
+    "Pop / Soul":      {"beat_strength": 50, "beat_decay": 50, "onset": 60, "cache": 35},
+    "Glitch / Noise":  {"beat_strength": 90, "beat_decay": 10, "onset": 80, "cache": 70},
+    "Drone / Pad":     {"beat_strength":  0, "beat_decay": 60, "onset": 20, "cache": 15},
+    "Hip Hop / Jazz":  {"beat_strength": 60, "beat_decay": 35, "onset": 50, "cache": 30},
+}
+
+def resize_to_format(img, format_type, half_res=False):
     if format_type == "16:9 (Orizzontale)": target_w, target_h = 1280, 720
-    elif format_type == "9:16 (Verticale)": target_w, target_h = 720, 1280
-    else: target_w, target_h = 1080, 1080
-    
+    elif format_type == "9:16 (Verticale)":  target_w, target_h = 720, 1280
+    else:                                     target_w, target_h = 1080, 1080
+    if half_res:
+        target_w, target_h = target_w // 2, target_h // 2
+    h, w = img.shape[:2]
     aspect_target = target_w / target_h
     aspect_img = w / h
     if aspect_img > aspect_target:
         new_w = int(h * aspect_target)
         start_x = (w - new_w) // 2
-        img_cropped = img[:, start_x:start_x+new_w]
+        img = img[:, start_x:start_x+new_w]
     else:
         new_h = int(w / aspect_target)
         start_y = (h - new_h) // 2
-        img_cropped = img[start_y:start_y+new_h, :]
-    return cv2.resize(img_cropped, (target_w, target_h))
+        img = img[start_y:start_y+new_h, :]
+    return cv2.resize(img, (target_w, target_h))
 
-def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_limit, k_p, m1_s, m1_e, m2_s, m2_e, p_m1_ctrl, p_m2_ctrl, start_c, end_c, format_type, inc_master, rand_lines, photo_speed, chaos_val,
-                    beat_strength, onset_photo_switch, beat_decay, beat_cache_sensitivity, rhythm_tracking):
+def generate_master(up_m1, up_m2, up_trit, up_aud,
+                    orientation, strand_val, max_limit,
+                    chaos_val, photo_speed, format_type,
+                    start_c, end_c,
+                    rand_lines,
+                    beat_sync, genre,
+                    rhythm_tracking):
+
     fps = 24
     total_f = int(max_limit * fps)
     prog_bar = st.progress(0)
 
-    # Assets
-    img_m1 = resize_to_format(np.array(Image.open(up_m1).convert("RGB")), format_type) if up_m1 else None
-    img_m2 = resize_to_format(np.array(Image.open(up_m2).convert("RGB")), format_type) if up_m2 else None
-    t_processed = [resize_to_format(np.array(Image.open(f).convert("RGB")), format_type) for f in up_trit] if up_trit else []
-    
-    pool_imgs = t_processed.copy()
-    if inc_master:
-        if img_m1 is not None: pool_imgs.append(img_m1)
-        if img_m2 is not None: pool_imgs.append(img_m2)
-    if not pool_imgs: pool_imgs = [np.zeros((720, 1280, 3), dtype=np.uint8)]
-    
+    # --- ASSETS — riduzione a metà risoluzione durante generazione ---
+    def load_img(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True)
+
+    img_m1 = load_img(up_m1) if up_m1 else None
+    img_m2 = load_img(up_m2) if up_m2 else None
+    pool_imgs = [load_img(f) for f in up_trit] if up_trit else []
+    if not pool_imgs:
+        pool_imgs = [np.zeros((360, 640, 3), dtype=np.uint8)]
+
     h, w = pool_imgs[0].shape[:2]
-    
+
+    # Output a risoluzione piena — upscale solo in scrittura finale
+    if format_type == "16:9 (Orizzontale)": out_w, out_h = 1280, 720
+    elif format_type == "9:16 (Verticale)":  out_w, out_h = 720, 1280
+    else:                                     out_w, out_h = 1080, 1080
+
     # --- AUDIO ANALYSIS ---
-    audio_envelope = np.ones(total_f)
-    beat_envelope = np.zeros(total_f)
-    onset_envelope = np.zeros(total_f)
-    rhythm_envelope = None  # None = non attivo, array = attivo e comanda val
-    audio_peak = 0.0
-    beat_count = 0
-    temp_aud_path = None
+    audio_envelope  = np.ones(total_f)
+    beat_envelope   = np.zeros(total_f)
+    onset_envelope  = np.zeros(total_f)
+    rhythm_envelope = None
+    audio_peak      = 0.0
+    beat_count      = 0
+    temp_aud_path   = None
 
     if up_aud:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t_aud:
-            t_aud.write(up_aud.read())
-            temp_aud_path = t_aud.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t:
+            t.write(up_aud.read())
+            temp_aud_path = t.name
+
         y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
 
-        # RMS — sempre calcolato, usato solo se rhythm_tracking è OFF
+        # RMS
         rms = librosa.feature.rms(y=y)[0]
         audio_peak = float(np.max(rms))
         audio_envelope = np.interp(
@@ -77,58 +97,70 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
             np.arange(len(rms)), rms / (rms.max() + 1e-6)
         )
 
-        # Beat + Onset
-        if beat_strength > 0:
-            _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-            beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-            beat_count = len(beat_times)
-            for bt in beat_times:
-                bf = int(bt * fps)
-                decay_rate = 1.0 - (beat_decay / 100.0) * 0.98
-                for df in range(min(int(fps * 0.5), total_f - bf)):
-                    beat_envelope[bf + df] = max(beat_envelope[bf + df], decay_rate ** df)
+        # Beat + Onset dal preset genere
+        if beat_sync:
+            p = GENRE_PRESETS[genre]
+            bs = p["beat_strength"]
+            bd = p["beat_decay"]
+            op = p["onset"]
+            bc = p["cache"]
 
-        if onset_photo_switch > 0:
-            onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
-            onset_times = librosa.frames_to_time(onset_frames, sr=sr)
-            for ot in onset_times:
-                of = int(ot * fps)
-                if of < total_f:
-                    onset_envelope[of] = 1.0
+            if bs > 0:
+                _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+                beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+                beat_count = len(beat_times)
+                decay_rate = 1.0 - (bd / 100.0) * 0.98
+                for bt in beat_times:
+                    bf = int(bt * fps)
+                    for df in range(min(int(fps * 0.5), total_f - bf)):
+                        beat_envelope[bf + df] = max(beat_envelope[bf + df], decay_rate ** df)
 
-        # Rhythm Tracking — quando attivo SOSTITUISCE la power curve
+            if op > 0:
+                onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
+                for ot in librosa.frames_to_time(onset_frames, sr=sr):
+                    of = int(ot * fps)
+                    if of < total_f:
+                        onset_envelope[of] = 1.0
+        else:
+            bs, bd, op, bc = 0, 50, 0, 30
+
+        # Rhythm Tracking
         if rhythm_tracking:
-            # Tempogram: velocità ritmica locale
             tempogram = librosa.feature.tempogram(y=y, sr=sr)
             tempo_local = tempogram.max(axis=0).astype(float)
-            tempo_local = tempo_local / (tempo_local.max() + 1e-6)
-
-            # Spectral Flux: cambi di timbro/attacco
+            tempo_local /= (tempo_local.max() + 1e-6)
             stft = np.abs(librosa.stft(y))
             flux = np.sqrt(np.sum(np.diff(stft, axis=1) ** 2, axis=0))
-            flux = flux / (flux.max() + 1e-6)
-
-            # Combinazione 50/50
+            flux /= (flux.max() + 1e-6)
             min_len = min(len(tempo_local), len(flux))
             combined = (tempo_local[:min_len] * 0.5 + flux[:min_len] * 0.5)
-            combined = combined / (combined.max() + 1e-6)
-
-            # Interpolazione a total_f frame
+            combined /= (combined.max() + 1e-6)
             rhythm_envelope = np.interp(
                 np.linspace(0, len(combined)-1, total_f),
                 np.arange(len(combined)), combined
             )
-
-            # Smoothing — finestra mezza secondo
             kernel = np.ones(fps // 2) / (fps // 2)
             rhythm_envelope = np.convolve(rhythm_envelope, kernel, mode='same')
+            rhythm_envelope = np.clip(rhythm_envelope / (rhythm_envelope.max() + 1e-6), 0.0, 1.0)
 
-            # Normalizza tra 0 e 1 — nessun floor artificiale:
-            # su brani lenti deve poter andare davvero vicino a zero
-            rhythm_envelope = rhythm_envelope / (rhythm_envelope.max() + 1e-6)
-            rhythm_envelope = np.clip(rhythm_envelope, 0.0, 1.0)
-
+    # --- CACHE FOTO con limite massimo ---
+    MAX_CACHE = 400
     cached_picks = {}
+    cache_keys_order = []
+
+    def cache_set(key, val):
+        if key not in cached_picks:
+            if len(cache_keys_order) >= MAX_CACHE:
+                old = cache_keys_order.pop(0)
+                cached_picks.pop(old, None)
+            cache_keys_order.append(key)
+        cached_picks[key] = val
+
+    # --- POWER CURVE semplificata: chaos controlla solo intensità strisce ---
+    c_n = chaos_val / 100.0
+    sv = int(85 * (1 - c_n) + 2)
+    pv = min(int(100 * (1 - c_n) + 5), 100)
+    ev = int(75 * (1 - c_n) + 2)
 
     def make_frame(t):
         f = int(t * fps)
@@ -136,98 +168,127 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         prog_bar.progress(f / total_f)
         prog = t / max_limit
 
-        # Transizione statistica — invariata
-        if prog < start_c:
-            prob_m1, prob_m2, prob_c = 1.0, 0.0, 0.0
-        elif prog > end_c:
-            prob_m1, prob_m2, prob_c = 0.0, 1.0, 0.0
-        else:
-            t_rel = (prog - start_c) / (end_c - start_c)
-            prob_m1 = (1.0 - t_rel) * (p_m1_ctrl / 100.0)
-            prob_m2 = t_rel * (p_m2_ctrl / 100.0)
-            prob_c = (chaos_val / 100.0)
-            total_p = prob_m1 + prob_m2 + prob_c + 1e-6
-            prob_m1, prob_m2, prob_c = prob_m1/total_p, prob_m2/total_p, prob_c/total_p
+        # --- SELEZIONE FOTO: logica transizione M1 → Calderone → M2 ---
+        has_masters = (img_m1 is not None) and (img_m2 is not None)
 
-        # --- VAL: logica biforcata ---
+        if has_masters:
+            if prog < start_c:
+                # Solo M1
+                def pick():
+                    key = f // max(1, int(fps / photo_speed))
+                    if key in cached_picks and random.random() > 0.1:
+                        return cached_picks[key]
+                    cache_set(key, img_m1)
+                    return img_m1
+            elif prog > end_c:
+                # Solo M2
+                def pick():
+                    key = f // max(1, int(fps / photo_speed))
+                    if key in cached_picks and random.random() > 0.1:
+                        return cached_picks[key]
+                    cache_set(key, img_m2)
+                    return img_m2
+            else:
+                # Transizione: mix M1, Calderone, M2 in base a chaos e posizione
+                t_rel = (prog - start_c) / (end_c - start_c)
+                def pick():
+                    interval = max(1, int(fps / photo_speed))
+                    key = f // interval
+                    force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
+                    if key in cached_picks and not force and random.random() > 0.1:
+                        return cached_picks[key]
+                    r = random.random()
+                    chaos_prob = c_n * 0.6
+                    m1_prob = (1 - t_rel) * (1 - chaos_prob)
+                    m2_prob = t_rel * (1 - chaos_prob)
+                    if r < m1_prob: res = img_m1
+                    elif r < m1_prob + m2_prob: res = img_m2
+                    else: res = random.choice(pool_imgs)
+                    cache_set(key, res)
+                    return res
+        else:
+            # Solo Calderone
+            def pick():
+                if rhythm_envelope is not None:
+                    speed_mod = max(1, photo_speed * (0.2 + rhythm_envelope[f] * 0.8))
+                else:
+                    speed_mod = photo_speed
+                interval = max(1, int(fps / speed_mod))
+                key = f // interval
+                force = onset_envelope[f] > 0 and beat_sync and random.random() < (bc / 100.0) if beat_sync else False
+                if key in cached_picks and not force and random.random() > 0.1:
+                    return cached_picks[key]
+                res = random.choice(pool_imgs)
+                cache_set(key, res)
+                return res
+
+        # --- VAL: rhythm bypassa power curve se attivo ---
         if rhythm_envelope is not None:
-            # RHYTHM ON: rhythm_envelope comanda direttamente — power curve bypassata
             val = rhythm_envelope[f]
         else:
-            # RHYTHM OFF: comportamento originale invariato
             mid = 0.5
-            v_base = (k_p['sv'] + (prog/mid)*(k_p['pv']-k_p['sv'])) if prog <= mid else \
-                     (k_p['pv'] + ((prog-mid)/mid)*(k_p['ev']-k_p['pv']))
+            v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
             val = (v_base / 100.0) * audio_envelope[f]
 
-        # Beat amplifica val in entrambe le modalità
-        if beat_strength > 0:
-            val = val * (1.0 + beat_envelope[f] * (beat_strength / 100.0))
+        if beat_sync and beat_envelope[f] > 0:
+            val = val * (1.0 + beat_envelope[f] * (bs / 100.0))
 
-        mag1 = (m1_s + prog * (m1_e - m1_s)) / 100
-        mag2 = (m2_s + prog * (m2_e - m2_s)) / 100
-        dist_mult = 1.0 - np.clip(mag1 + mag2, 0, 0.95)
+        # --- SHIFT con strand adattato alla mezza risoluzione ---
+        strand = max(1, strand_val // 2)
 
-        def pick():
-            # Photo speed modulata dal ritmo se attivo
-            if rhythm_envelope is not None:
-                speed_mod = max(1, photo_speed * (0.2 + rhythm_envelope[f] * 0.8))
-            else:
-                speed_mod = photo_speed
-            interval = max(1, int(fps / speed_mod))
-            key = f // interval
-            force_change = (
-                onset_envelope[f] > 0 and
-                random.random() < (onset_photo_switch / 100.0) and
-                random.random() < (beat_cache_sensitivity / 100.0)
-            )
-            if key in cached_picks and not force_change and random.random() > 0.1:
-                return cached_picks[key]
-            r = random.random()
-            if img_m1 is not None and r < prob_m1: res = img_m1
-            elif img_m2 is not None and r < (prob_m1 + prob_m2): res = img_m2
-            else: res = random.choice(pool_imgs)
-            cached_picks[key] = res
-            return res
-
-        if orientation == "Nessun Effetto": return pick()
-
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
         def get_b(max_d):
             res, c = [], 0
             while c < max_d:
-                sw = random.randint(max(2, int(strand_val*0.6)), int(strand_val*1.4)) if rand_lines else strand_val
+                sw = random.randint(max(2, int(strand*0.6)), int(strand*1.4)) if rand_lines else strand
                 res.append((c, min(c+sw, max_d)))
                 c += sw
             return res
 
+        if orientation == "Nessun Effetto":
+            return cv2.resize(pick(), (out_w, out_h))
+
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+
         if orientation == "Orizzontale":
             for s, e in get_b(h):
-                target = pick(); shift = int(random.uniform(-500, 500) * val * dist_mult)
+                target = pick()
+                shift = int(random.uniform(-250, 250) * val)
                 frame[s:e, :] = np.roll(target[s:e, :], shift, axis=1)
+
         elif orientation == "Verticale":
             for s, e in get_b(w):
-                target = pick(); shift = int(random.uniform(-500, 500) * val * dist_mult)
+                target = pick()
+                shift = int(random.uniform(-250, 250) * val)
                 frame[:, s:e] = np.roll(target[:, s:e], shift, axis=0)
+
         elif orientation == "Mix (H+V)":
             for s, e in get_b(h):
-                target = pick(); shift = int(random.uniform(-500, 500) * val * dist_mult)
+                target = pick()
+                shift = int(random.uniform(-250, 250) * val)
                 frame[s:e, :] = np.roll(target[s:e, :], shift, axis=1)
             for s, e in get_b(w):
                 if random.random() > 0.5:
-                    shift_v = int(random.uniform(-400, 400) * val * dist_mult)
+                    shift_v = int(random.uniform(-200, 200) * val)
                     frame[:, s:e] = np.roll(frame[:, s:e], shift_v, axis=0)
+
         elif orientation == "Mosaico":
-            blocks_h = get_b(h)
-            blocks_w = get_b(w)
-            for bh in blocks_h:
-                for bw in blocks_w:
-                    target = pick()
-                    shift = int(random.uniform(-400, 400) * val * dist_mult)
-                    axis = random.choice([0, 1])
-                    patch = target[bh[0]:bh[1], bw[0]:bw[1]]
-                    frame[bh[0]:bh[1], bw[0]:bw[1]] = np.roll(patch, shift, axis=axis)
-        return frame
+            # OTTIMIZZATO: roll sull'intero frame, poi patch — non patch per patch
+            target = pick()
+            shift_h = int(random.uniform(-250, 250) * val)
+            shift_v = int(random.uniform(-250, 250) * val)
+            rolled = np.roll(np.roll(target, shift_h, axis=1), shift_v, axis=0)
+            bh_list = get_b(h)
+            bw_list = get_b(w)
+            for bh in bh_list:
+                for bw in bw_list:
+                    # Alterna tra frame originale e rolled per effetto mosaico
+                    if random.random() > 0.5:
+                        frame[bh[0]:bh[1], bw[0]:bw[1]] = rolled[bh[0]:bh[1], bw[0]:bw[1]]
+                    else:
+                        frame[bh[0]:bh[1], bw[0]:bw[1]] = target[bh[0]:bh[1], bw[0]:bw[1]]
+
+        # Upscale a risoluzione finale
+        return cv2.resize(frame, (out_w, out_h))
 
     clip = VideoClip(make_frame, duration=max_limit)
     if temp_aud_path:
@@ -237,34 +298,30 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
         clip = clip.set_audio(audio_clip)
 
     v_out = tempfile.mktemp(suffix=".mp4")
-    clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None, fps=fps, bitrate="5000k", logger=None)
+    clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None,
+                         fps=fps, bitrate="5000k", logger=None)
 
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
-:: STILE: Minimalismo Computazionale / Dissezione Brutalista
-:: MOTORE: recursive_cut_pro [v8.1]
-:: EFFETTO: Recursive Strand Shift (Reattivo)
-:: ANALISI: RMS Signal Analysis / Beat Sync / Rhythm Tracking
-:: PROCESSO: Frammentazione Ricorsiva / Magnetismo Forzato
-
-"L'immagine è stata smontata. Il codice ne ha riscritto la struttura."
+:: MOTORE: recursive_cut_pro [v9.0]
+:: EFFETTO: Recursive Strand Shift
+:: ANALISI: RMS / Beat Sync / Rhythm Tracking
 
 ---
 > TECHNICAL LOG SHEET:
-* Asset Pool: {len(pool_imgs)} foto dissezionate
-* Rendering: {total_f} frame totali generati
+* Asset Pool: {len(pool_imgs)} foto
+* Rendering: {total_f} frame @ {fps}fps
 * Geometria: {orientation} @ {strand_val}px
-* Power Curve: {'BYPASSED — Rhythm Tracking attivo' if rhythm_tracking else f"Start {k_p['sv']}% | Peak {k_p['pv']}% | End {k_p['ev']}%"}
-* Magnetismo: Inizio Snap @ {max_limit * start_c:.1f}s (Pull {m1_s}%)
-* Audio Peak: {audio_peak:.4f} normalized
-* Beat rilevati: {beat_count} | Beat Strength: {beat_strength}% | Beat Decay: {beat_decay}%
-* Onset Photo Switch: {onset_photo_switch}% | Cache Sensitivity: {beat_cache_sensitivity}%
-* Rhythm Tracking: {'ON — Tempogram + Spectral Flux (Power Curve bypassata)' if rhythm_tracking else 'OFF'}
+* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
+* Transizione: {int(start_c*100)}% — {int(end_c*100)}%
+* Audio Peak: {audio_peak:.4f}
+* Beat Sync: {'ON — ' + genre + ' — ' + str(beat_count) + ' beat' if beat_sync else 'OFF'}
+* Rhythm Tracking: {'ON' if rhythm_tracking else 'OFF'}
+* Power Curve: {'BYPASSED' if rhythm_tracking else 'ON'}
 
 > Regia e Algoritmo: Loop507
 
-#Loop507 #SlicePhoto #StrandShift #DigitalAnatomy #SignalCorruption #BrutalistArt 
-#ComputationalMinimalism #DataDestruction #ExperimentalVideo #GlitchArt"""
+#Loop507 #SlicePhoto #StrandShift #GlitchArt #ExperimentalVideo"""
 
     r_out = tempfile.mktemp(suffix=".txt")
     with open(r_out, "w") as f: f.write(report_text)
@@ -272,72 +329,78 @@ def generate_master(up_m1, up_m2, up_trit, up_aud, orientation, strand_val, max_
     gc.collect()
     return v_out, r_out
 
-# --- INTERFACCIA ---
+# =====================================================================
+# INTERFACCIA
+# =====================================================================
 st.title("Recursive-Cut-Photo by Loop507 🔪")
 c1, c2, c3 = st.columns([1, 1.2, 1])
 
 with c1:
     st.subheader("🖼️ Assets")
-    up_m1 = st.file_uploader("MASTER 1 (Start)", type=["jpg","png","jpeg"])
-    m1_s = st.slider("M1 Start Magnetism", 0, 100, 100)
-    m1_e = st.slider("M1 End Magnetism", 0, 100, 0)
-    st.divider()
-    up_m2 = st.file_uploader("MASTER 2 (End)", type=["jpg","png","jpeg"])
-    m2_s = st.slider("M2 Start Magnetism", 0, 100, 0)
-    m2_e = st.slider("M2 End Magnetism", 0, 100, 100)
+    up_m1 = st.file_uploader("MASTER 1 — inizio", type=["jpg","png","jpeg"])
+    up_m2 = st.file_uploader("MASTER 2 — fine",   type=["jpg","png","jpeg"])
     st.divider()
     up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
+    st.divider()
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
-    inc_m = st.toggle("Includi Master nel Calderone", value=True)
 
 with c2:
-    st.subheader("✂️ Controllo Frame & Transizione")
-    p_m1 = st.slider("Percentuale Frame M1 (Presenza)", 0, 100, 100)
-    p_m2 = st.slider("Percentuale Frame M2 (Presenza)", 0, 100, 100)
-    st.divider()
-    start_t = st.slider("Inizio Dissoluzione (%)", 0, 50, 10) / 100.0
-    end_t = st.slider("Fine Ricomposizione (%)", 50, 100, 90) / 100.0
-    st.divider()
-    chaos = st.slider("🌀 Chaos level", 0, 100, 50)
-    c_n = chaos / 100.0
-    k_params = {'sv': int(85*(1-c_n)+2), 'pv': min(int(100*(1-c_n)+5),100), 'ev': int(75*(1-c_n)+2)}
-    speed = st.slider("Photo Speed (fps)", 1, 24, 6)
-    lines = st.slider("Strand (px)", 1, 500, 45)
+    st.subheader("✂️ Controllo")
+
+    # Transizione — compare solo se entrambi i master sono caricati
+    has_masters = (up_m1 is not None) and (up_m2 is not None)
+    if has_masters:
+        st.caption("Transizione M1 → Calderone → M2")
+        start_t = st.slider("Inizio transizione (%)", 0, 50, 10) / 100.0
+        end_t   = st.slider("Fine transizione (%)",  50, 100, 90) / 100.0
+        st.divider()
+    else:
+        start_t, end_t = 0.1, 0.9
+        if up_m1 or up_m2:
+            st.caption("⚠️ Carica entrambi i Master per attivare la transizione.")
+
+    chaos  = st.slider("🌀 Chaos", 0, 100, 50)
+    speed  = st.slider("⚡ Photo Speed (fps)", 1, 24, 6)
+    lines  = st.slider("📐 Strand (px)", 1, 500, 45)
     rand_l = st.toggle("Dynamic Slicing", value=True)
-    mode = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
+    mode   = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
 
 with c3:
     st.subheader("🎬 Rendering")
     fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
-    dur = st.number_input("Durata (sec)", 1, 120, 10)
+    dur = st.number_input("Durata (sec)", 1, 300, 10)
 
     st.divider()
-    st.subheader("🥁 Sync Audio Ritmico")
-    st.caption("Tutti a zero = comportamento identico all'originale")
-    beat_strength = st.slider("Beat Strength", 0, 100, 0)
-    beat_decay = st.slider("Beat Decay", 0, 100, 50)
-    onset_photo_switch = st.slider("Onset Photo Switch", 0, 100, 0)
-    beat_cache_sensitivity = st.slider("Beat Cache Sensitivity", 0, 100, 30)
-    rhythm_tracking = st.toggle(
-        "🎼 Segui il Ritmo del Brano",
-        value=False,
-        help="Bypassa la Power Curve: sono il Tempogram e lo Spectral Flux a guidare le strisce. Su brani lenti le strisce rallentano davvero. Su brani veloci esplodono."
-    )
+
+    # Sync audio — toggle + preset genere
+    beat_sync = st.toggle("🥁 A tempo di musica", value=False,
+        help="Attiva solo se hai caricato un audio.")
+    genre = "Techno / House"
+    if beat_sync:
+        genre = st.selectbox("Genere", list(GENRE_PRESETS.keys()))
+
+    rhythm_tracking = st.toggle("🎼 Segui il ritmo del brano", value=False,
+        help="Bypassa la Power Curve. Le strisce rallentano e accelerano con il brano.")
+
     st.divider()
 
     if st.button("🚀 AVVIA DISSEZIONE"):
         v, r = generate_master(
-            up_m1, up_m2, up_t, up_a, mode, lines, dur, k_params,
-            m1_s, m1_e, m2_s, m2_e, p_m1, p_m2, start_t, end_t,
-            fmt, inc_m, rand_l, speed, chaos,
-            beat_strength, onset_photo_switch, beat_decay, beat_cache_sensitivity, rhythm_tracking
+            up_m1, up_m2, up_t, up_a,
+            mode, lines, dur,
+            chaos, speed, fmt,
+            start_t, end_t,
+            rand_l,
+            beat_sync, genre,
+            rhythm_tracking
         )
         st.session_state.v_path, st.session_state.r_path = v, r
 
     if st.session_state.v_path:
         st.video(st.session_state.v_path)
-        st.download_button("💾 DOWNLOAD VIDEO", open(st.session_state.v_path, "rb"), "video_dissection.mp4")
+        st.download_button("💾 DOWNLOAD VIDEO",
+            open(st.session_state.v_path, "rb"), "video_dissection.mp4")
         if st.session_state.r_path:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
-            st.text_area("📄 TECHNICAL REPORT", r_txt, height=480)
+            st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
             st.download_button("📄 SCARICA REPORT", r_txt, "report_dissection.txt")
