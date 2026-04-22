@@ -219,16 +219,21 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 cache_set(key, res)
                 return res
 
-        # --- VAL: rhythm bypassa power curve se attivo ---
-        if rhythm_envelope is not None:
-            val = rhythm_envelope[f]
+        # --- VAL: zero nelle zone M1/M2 pure, normale nel Calderone ---
+        has_masters_val = (img_m1 is not None) and (img_m2 is not None)
+        if has_masters_val and (prog <= m1_end or prog >= m2_start):
+            # Zona M1 o M2 — frame intero, zero glitch
+            val = 0.0
         else:
-            mid = 0.5
-            v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
-            val = (v_base / 100.0) * audio_envelope[f]
+            if rhythm_envelope is not None:
+                val = rhythm_envelope[f]
+            else:
+                mid = 0.5
+                v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
+                val = (v_base / 100.0) * audio_envelope[f]
 
-        if beat_sync and beat_envelope[f] > 0:
-            val = val * (1.0 + beat_envelope[f] * (bs / 100.0))
+            if beat_sync and beat_envelope[f] > 0:
+                val = val * (1.0 + beat_envelope[f] * (bs / 100.0))
 
         # --- SHIFT con strand adattato alla mezza risoluzione ---
         strand = max(1, strand_val // 2)
