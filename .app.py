@@ -58,11 +58,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     prog_bar = st.progress(0)
 
     # --- ASSETS — riduzione a metà risoluzione durante generazione ---
-    def load_img(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True)
+    # M1 e M2 a piena risoluzione — restano integre nelle zone pure
+    def load_img_full(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=False)
+    # Calderone a metà risoluzione — risparmio RAM nel glitch
+    def load_img_half(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True)
 
-    img_m1 = load_img(up_m1) if up_m1 else None
-    img_m2 = load_img(up_m2) if up_m2 else None
-    pool_imgs = [load_img(f) for f in up_trit] if up_trit else []
+    img_m1 = load_img_full(up_m1) if up_m1 else None
+    img_m2 = load_img_full(up_m2) if up_m2 else None
+    pool_imgs = [load_img_half(f) for f in up_trit] if up_trit else []
     if not pool_imgs:
         pool_imgs = [np.zeros((360, 640, 3), dtype=np.uint8)]
 
@@ -177,21 +180,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             # M1 intera fino a m1_end, poi solo Calderone, poi M2 intera da m2_start
 
             if prog <= m1_end:
-                # M1 pura al 100% — nessun frammento
-                def pick():
-                    key = f // max(1, int(fps / photo_speed))
-                    if key in cached_picks and random.random() > 0.1:
-                        return cached_picks[key]
-                    cache_set(key, img_m1)
-                    return img_m1
+                # M1 pura a piena risoluzione — restituisce direttamente senza loop strisce
+                return cv2.resize(img_m1, (out_w, out_h))
             elif prog >= m2_start:
-                # M2 pura al 100% — nessun frammento
-                def pick():
-                    key = f // max(1, int(fps / photo_speed))
-                    if key in cached_picks and random.random() > 0.1:
-                        return cached_picks[key]
-                    cache_set(key, img_m2)
-                    return img_m2
+                # M2 pura a piena risoluzione — restituisce direttamente senza loop strisce
+                return cv2.resize(img_m2, (out_w, out_h))
             else:
                 # Solo Calderone puro — glitch tra i due master
                 def pick():
