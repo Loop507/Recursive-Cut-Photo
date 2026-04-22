@@ -180,11 +180,21 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             # M1 intera fino a m1_end, poi solo Calderone, poi M2 intera da m2_start
 
             if prog <= m1_end:
-                # M1 pura a piena risoluzione — restituisce direttamente senza loop strisce
-                return cv2.resize(img_m1, (out_w, out_h))
+                # M1 si disintegra: val sale da 0 a pieno avvicinandosi a m1_end
+                def pick():
+                    key = f // max(1, int(fps / photo_speed))
+                    if key in cached_picks and random.random() > 0.1:
+                        return cached_picks[key]
+                    cache_set(key, img_m1)
+                    return img_m1
             elif prog >= m2_start:
-                # M2 pura a piena risoluzione — restituisce direttamente senza loop strisce
-                return cv2.resize(img_m2, (out_w, out_h))
+                # M2 si ricompone: val scende da pieno a 0 avvicinandosi alla fine
+                def pick():
+                    key = f // max(1, int(fps / photo_speed))
+                    if key in cached_picks and random.random() > 0.1:
+                        return cached_picks[key]
+                    cache_set(key, img_m2)
+                    return img_m2
             else:
                 # Solo Calderone puro — glitch tra i due master
                 def pick():
@@ -212,21 +222,34 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 cache_set(key, res)
                 return res
 
-        # --- VAL: zero nelle zone M1/M2 pure, normale nel Calderone ---
+        # --- VAL: rampa nelle zone M1/M2, pieno nel Calderone ---
         has_masters_val = (img_m1 is not None) and (img_m2 is not None)
-        if has_masters_val and (prog <= m1_end or prog >= m2_start):
-            # Zona M1 o M2 — frame intero, zero glitch
-            val = 0.0
-        else:
-            if rhythm_envelope is not None:
-                val = rhythm_envelope[f]
-            else:
-                mid = 0.5
-                v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
-                val = (v_base / 100.0) * audio_envelope[f]
 
-            if beat_sync and beat_envelope[f] > 0:
-                val = val * (1.0 + beat_envelope[f] * (bs / 100.0))
+        # Calcola val base
+        if rhythm_envelope is not None:
+            val_base = rhythm_envelope[f]
+        else:
+            mid = 0.5
+            v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
+            val_base = (v_base / 100.0) * audio_envelope[f]
+
+        if beat_sync and beat_envelope[f] > 0:
+            val_base = val_base * (1.0 + beat_envelope[f] * (bs / 100.0))
+
+        if has_masters_val:
+            if prog <= m1_end:
+                # M1: val sale da 0 a pieno — intera all'inizio, caos a m1_end
+                ramp = prog / m1_end if m1_end > 0.001 else 1.0
+                val = val_base * np.clip(ramp, 0.0, 1.0)
+            elif prog >= m2_start:
+                # M2: val scende da pieno a 0 — caos a m2_start, intera alla fine
+                span = 1.0 - m2_start if m2_start < 0.999 else 1e-6
+                ramp = 1.0 - ((prog - m2_start) / span)
+                val = val_base * np.clip(ramp, 0.0, 1.0)
+            else:
+                val = val_base
+        else:
+            val = val_base
 
         # --- SHIFT con strand adattato alla mezza risoluzione ---
         strand = max(1, strand_val // 2)
