@@ -49,7 +49,7 @@ def resize_to_format(img, format_type, half_res=False):
 def generate_master(up_m1, up_m2, up_trit, up_aud,
                     orientation, strand_val, max_limit,
                     chaos_val, photo_speed, format_type,
-                    start_c, end_c,
+                    m1_end, m2_start,
                     rand_lines,
                     beat_sync, genre):
 
@@ -174,45 +174,41 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         has_masters = (img_m1 is not None) and (img_m2 is not None)
 
         if has_masters:
-            # Margine di tolleranza per valori estremi (0% e 100%)
-            in_m1_zone = prog <= start_c or start_c <= 0.01
-            in_m2_zone = prog >= end_c or end_c >= 0.99
+            # M1: da 0% sfuma fino a m1_end — prob scende da 1.0 a 0.0
+            # M2: da m2_start emerge fino al 100% — prob sale da 0.0 a 1.0
+            # Tra m1_end e m2_start: solo Calderone
 
-            if in_m1_zone and not in_m2_zone:
-                # Solo M1
-                def pick():
-                    key = f // max(1, int(fps / photo_speed))
-                    if key in cached_picks and random.random() > 0.1:
-                        return cached_picks[key]
-                    cache_set(key, img_m1)
-                    return img_m1
-            elif in_m2_zone and prog >= end_c:
-                # Solo M2
-                def pick():
-                    key = f // max(1, int(fps / photo_speed))
-                    if key in cached_picks and random.random() > 0.1:
-                        return cached_picks[key]
-                    cache_set(key, img_m2)
-                    return img_m2
+            if prog <= m1_end:
+                # M1 che sfuma: all'inizio è 100%, a m1_end è 0%
+                m1_prob = np.clip(1.0 - (prog / m1_end if m1_end > 0 else 0), 0.0, 1.0)
+                m2_prob = 0.0
+            elif prog >= m2_start:
+                # M2 che emerge: a m2_start è 0%, alla fine è 100%
+                span = 1.0 - m2_start if m2_start < 1.0 else 1e-6
+                m2_prob = np.clip((prog - m2_start) / span, 0.0, 1.0)
+                m1_prob = 0.0
             else:
-                # Transizione: mix M1, Calderone, M2 in base a chaos e posizione
-                span = end_c - start_c if end_c > start_c else 1e-6
-                t_rel = np.clip((prog - start_c) / span, 0.0, 1.0)
-                def pick():
-                    interval = max(1, int(fps / photo_speed))
-                    key = f // interval
-                    force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
-                    if key in cached_picks and not force and random.random() > 0.1:
-                        return cached_picks[key]
-                    r = random.random()
-                    chaos_prob = c_n * 0.6
-                    m1_prob = (1 - t_rel) * (1 - chaos_prob)
-                    m2_prob = t_rel * (1 - chaos_prob)
-                    if r < m1_prob: res = img_m1
-                    elif r < m1_prob + m2_prob: res = img_m2
-                    else: res = random.choice(pool_imgs)
-                    cache_set(key, res)
-                    return res
+                # Solo Calderone puro
+                m1_prob = 0.0
+                m2_prob = 0.0
+
+            chaos_prob = c_n * 0.6
+            # Scala le prob master in base al chaos (più chaos = più Calderone)
+            m1_prob = m1_prob * (1.0 - chaos_prob)
+            m2_prob = m2_prob * (1.0 - chaos_prob)
+
+            def pick():
+                interval = max(1, int(fps / photo_speed))
+                key = f // interval
+                force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
+                if key in cached_picks and not force and random.random() > 0.1:
+                    return cached_picks[key]
+                r = random.random()
+                if r < m1_prob: res = img_m1
+                elif r < m1_prob + m2_prob: res = img_m2
+                else: res = random.choice(pool_imgs)
+                cache_set(key, res)
+                return res
         else:
             # Solo Calderone
             def pick():
@@ -321,7 +317,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Rendering: {total_f} frame @ {fps}fps
 * Geometria: {orientation} @ {strand_val}px
 * Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
-* Transizione: {int(start_c*100)}% — {int(end_c*100)}%
+* M1 sparisce a: {int(m1_end*100)}% | M2 appare a: {int(m2_start*100)}%
 * Audio Peak: {audio_peak:.4f}
 * Beat Sync: {'ON' if beat_sync else 'OFF'}
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
@@ -359,11 +355,13 @@ with c2:
     has_masters = (up_m1 is not None) and (up_m2 is not None)
     if has_masters:
         st.caption("Transizione M1 → Calderone → M2")
-        start_t = st.slider("Inizio transizione (%)", 0, 50, 10) / 100.0
-        end_t   = st.slider("Fine transizione (%)",  50, 100, 90) / 100.0
+        m1_end_t  = st.slider("M1 sparisce a (%)",  0, 100, 50) / 100.0
+        m2_start_t = st.slider("M2 appare a (%)", 0, 100, 60) / 100.0
+        if m2_start_t < m1_end_t:
+            st.caption("⚠️ M2 appare prima che M1 finisca — si sovrappongono.")
         st.divider()
     else:
-        start_t, end_t = 0.1, 0.9
+        m1_end_t, m2_start_t = 0.5, 0.6
         if up_m1 or up_m2:
             st.caption("⚠️ Carica entrambi i Master per attivare la transizione.")
 
@@ -394,7 +392,7 @@ with c3:
             up_m1, up_m2, up_t, up_a,
             mode, lines, dur,
             chaos, speed, fmt,
-            start_t, end_t,
+            m1_end_t, m2_start_t,
             rand_l,
             beat_sync, genre
         )
