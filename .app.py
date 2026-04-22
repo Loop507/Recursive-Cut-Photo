@@ -174,41 +174,35 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         has_masters = (img_m1 is not None) and (img_m2 is not None)
 
         if has_masters:
-            # M1: da 0% sfuma fino a m1_end — prob scende da 1.0 a 0.0
-            # M2: da m2_start emerge fino al 100% — prob sale da 0.0 a 1.0
-            # Tra m1_end e m2_start: solo Calderone
+            # M1 intera fino a m1_end, poi solo Calderone, poi M2 intera da m2_start
 
             if prog <= m1_end:
-                # M1 che sfuma: all'inizio è 100%, a m1_end è 0%
-                m1_prob = np.clip(1.0 - (prog / m1_end if m1_end > 0 else 0), 0.0, 1.0)
-                m2_prob = 0.0
+                # M1 pura al 100% — nessun frammento
+                def pick():
+                    key = f // max(1, int(fps / photo_speed))
+                    if key in cached_picks and random.random() > 0.1:
+                        return cached_picks[key]
+                    cache_set(key, img_m1)
+                    return img_m1
             elif prog >= m2_start:
-                # M2 che emerge: a m2_start è 0%, alla fine è 100%
-                span = 1.0 - m2_start if m2_start < 1.0 else 1e-6
-                m2_prob = np.clip((prog - m2_start) / span, 0.0, 1.0)
-                m1_prob = 0.0
+                # M2 pura al 100% — nessun frammento
+                def pick():
+                    key = f // max(1, int(fps / photo_speed))
+                    if key in cached_picks and random.random() > 0.1:
+                        return cached_picks[key]
+                    cache_set(key, img_m2)
+                    return img_m2
             else:
-                # Solo Calderone puro
-                m1_prob = 0.0
-                m2_prob = 0.0
-
-            chaos_prob = c_n * 0.6
-            # Scala le prob master in base al chaos (più chaos = più Calderone)
-            m1_prob = m1_prob * (1.0 - chaos_prob)
-            m2_prob = m2_prob * (1.0 - chaos_prob)
-
-            def pick():
-                interval = max(1, int(fps / photo_speed))
-                key = f // interval
-                force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
-                if key in cached_picks and not force and random.random() > 0.1:
-                    return cached_picks[key]
-                r = random.random()
-                if r < m1_prob: res = img_m1
-                elif r < m1_prob + m2_prob: res = img_m2
-                else: res = random.choice(pool_imgs)
-                cache_set(key, res)
-                return res
+                # Solo Calderone puro — glitch tra i due master
+                def pick():
+                    interval = max(1, int(fps / photo_speed))
+                    key = f // interval
+                    force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
+                    if key in cached_picks and not force and random.random() > 0.1:
+                        return cached_picks[key]
+                    res = random.choice(pool_imgs)
+                    cache_set(key, res)
+                    return res
         else:
             # Solo Calderone
             def pick():
