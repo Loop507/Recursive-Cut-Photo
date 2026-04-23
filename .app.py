@@ -184,30 +184,42 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             # M1 intera fino a m1_end, poi solo Calderone, poi M2 intera da m2_start
 
             if prog <= m1_end:
-                # M1 si disintegra — usa half per il loop strisce
-                # Se val quasi zero, restituisce direttamente la versione full
-                _ramp_m1 = prog / m1_end if m1_end > 0.001 else 1.0
-                if _ramp_m1 < 0.02 and img_m1 is not None:
+                # M1 si disintegra mentre il Calderone appare
+                # all'inizio M1 domina, alla fine Calderone domina
+                _ramp_m1 = np.clip(prog / m1_end if m1_end > 0.001 else 1.0, 0.0, 1.0)
+                if _ramp_m1 < 0.02:
+                    # Primissimi frame — M1 intera a piena risoluzione
                     return cv2.resize(img_m1, (out_w, out_h))
+                _m1_prob = 1.0 - _ramp_m1  # M1 scende da 1 a 0
                 def pick():
                     key = f // max(1, int(fps / photo_speed))
                     if key in cached_picks and random.random() > 0.1:
                         return cached_picks[key]
-                    cache_set(key, img_m1_half)
-                    return img_m1_half
+                    if random.random() < _m1_prob:
+                        res = img_m1_half
+                    else:
+                        res = random.choice(pool_imgs)
+                    cache_set(key, res)
+                    return res
             elif prog >= m2_start:
-                # M2 si ricompone — usa half per il loop strisce
-                # Se val quasi zero, restituisce direttamente la versione full
+                # M2 si ricompone mentre il Calderone scompare
+                # all'inizio Calderone domina, alla fine M2 domina
                 _span_m2 = 1.0 - m2_start if m2_start < 0.999 else 1e-6
-                _ramp_m2 = 1.0 - ((prog - m2_start) / _span_m2)
-                if _ramp_m2 < 0.02 and img_m2 is not None:
+                _ramp_m2 = np.clip((prog - m2_start) / _span_m2, 0.0, 1.0)
+                if _ramp_m2 > 0.98:
+                    # Ultimissimi frame — M2 intera a piena risoluzione
                     return cv2.resize(img_m2, (out_w, out_h))
+                _m2_prob = _ramp_m2  # M2 sale da 0 a 1
                 def pick():
                     key = f // max(1, int(fps / photo_speed))
                     if key in cached_picks and random.random() > 0.1:
                         return cached_picks[key]
-                    cache_set(key, img_m2_half)
-                    return img_m2_half
+                    if random.random() < _m2_prob:
+                        res = img_m2_half
+                    else:
+                        res = random.choice(pool_imgs)
+                    cache_set(key, res)
+                    return res
             else:
                 # Solo Calderone puro — glitch tra i due master
                 def pick():
