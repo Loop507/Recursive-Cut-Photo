@@ -9,15 +9,16 @@ import random
 import os
 import librosa
 import gc
+from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
 
-if 'v_path' not in st.session_state: st.session_state.v_path = None
-if 'r_path' not in st.session_state: st.session_state.r_path = None
+if 'v_path'  not in st.session_state: st.session_state.v_path  = None
+if 'r_path'  not in st.session_state: st.session_state.r_path  = None
+if 'file_ts' not in st.session_state: st.session_state.file_ts = None
 
 # --- PRESET GENERE ---
-# rhythm: True = rhythm tracking attivo per quel genere (implicito, non mostrato all'utente)
 GENRE_PRESETS = {
     "Techno / House":  {"beat_strength": 70, "beat_decay": 20, "onset":  0, "cache": 20, "rhythm": False},
     "Orchestrale":     {"beat_strength": 20, "beat_decay": 80, "onset": 40, "cache": 25, "rhythm": True},
@@ -46,21 +47,68 @@ def resize_to_format(img, format_type, half_res=False):
         img = img[start_y:start_y+new_h, :]
     return cv2.resize(img, (target_w, target_h))
 
+
+def apply_glitch_stripes(src, dst, h, w, orientation, strand_val, rand_lines, val):
+    """Applica le strisce glitch da src verso dst con intensità val."""
+    strand = max(1, strand_val // 2)
+
+    def get_b(max_d):
+        res, c = [], 0
+        while c < max_d:
+            sw = random.randint(max(2, int(strand*0.6)), int(strand*1.4)) if rand_lines else strand
+            res.append((c, min(c+sw, max_d)))
+            c += sw
+        return res
+
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    if orientation == "Orizzontale":
+        for s, e in get_b(h):
+            shift = int(random.uniform(-250, 250) * val)
+            frame[s:e, :] = np.roll(src[s:e, :], shift, axis=1)
+    elif orientation == "Verticale":
+        for s, e in get_b(w):
+            shift = int(random.uniform(-250, 250) * val)
+            frame[:, s:e] = np.roll(src[:, s:e], shift, axis=0)
+    elif orientation == "Mix (H+V)":
+        for s, e in get_b(h):
+            shift = int(random.uniform(-250, 250) * val)
+            frame[s:e, :] = np.roll(src[s:e, :], shift, axis=1)
+        for s, e in get_b(w):
+            if random.random() > 0.5:
+                frame[:, s:e] = np.roll(frame[:, s:e], int(random.uniform(-200, 200) * val), axis=0)
+    elif orientation == "Mosaico":
+        shift_h = int(random.uniform(-250, 250) * val)
+        shift_v = int(random.uniform(-250, 250) * val)
+        rolled = np.roll(np.roll(src, shift_h, axis=1), shift_v, axis=0)
+        for bh in get_b(h):
+            for bw in get_b(w):
+                if random.random() > 0.5:
+                    frame[bh[0]:bh[1], bw[0]:bw[1]] = rolled[bh[0]:bh[1], bw[0]:bw[1]]
+                else:
+                    frame[bh[0]:bh[1], bw[0]:bw[1]] = src[bh[0]:bh[1], bw[0]:bw[1]]
+    else:
+        frame = src.copy()
+
+    # Blend glitch con dst in base a val
+    alpha = np.clip(val, 0.0, 1.0)
+    return (frame * alpha + dst * (1.0 - alpha)).astype(np.uint8)
+
+
 def generate_master(up_m1, up_m2, up_trit, up_aud,
                     orientation, strand_val, max_limit,
                     chaos_val, photo_speed, format_type,
                     m1_end, m2_start,
                     rand_lines,
-                    beat_sync, genre):
+                    beat_sync, genre,
+                    seq_mode,
+                    slideshow_mode, slide_hold, slide_trans, slide_trans_type):
 
     fps = 24
     total_f = int(max_limit * fps)
     prog_bar = st.progress(0)
 
-    # --- ASSETS — riduzione a metà risoluzione durante generazione ---
-    # M1 e M2 a piena risoluzione — restano integre nelle zone pure
     def load_img_full(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=False)
-    # Calderone a metà risoluzione — risparmio RAM nel glitch
     def load_img_half(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True)
 
     img_m1 = load_img_full(up_m1) if up_m1 else None
@@ -71,11 +119,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     h, w = pool_imgs[0].shape[:2]
 
-    # Versioni half-res di M1/M2 per il loop strisce — stessa dimensione del Calderone
     img_m1_half = load_img_half(up_m1) if up_m1 else None
     img_m2_half = load_img_half(up_m2) if up_m2 else None
 
-    # Output a risoluzione piena — upscale solo in scrittura finale
     if format_type == "16:9 (Orizzontale)": out_w, out_h = 1280, 720
     elif format_type == "9:16 (Verticale)":  out_w, out_h = 720, 1280
     else:                                     out_w, out_h = 1080, 1080
@@ -88,6 +134,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     audio_peak      = 0.0
     beat_count      = 0
     temp_aud_path   = None
+    bs, bd, op, bc  = 0, 50, 0, 30
+    rhythm_tracking = False
 
     if up_aud:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t:
@@ -96,7 +144,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
         y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
 
-        # RMS
         rms = librosa.feature.rms(y=y)[0]
         audio_peak = float(np.max(rms))
         audio_envelope = np.interp(
@@ -104,8 +151,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             np.arange(len(rms)), rms / (rms.max() + 1e-6)
         )
 
-        # Beat + Onset dal preset genere
-        if beat_sync:
+        # Beat sync solo se NON siamo in slideshow
+        if beat_sync and not slideshow_mode:
             p = GENRE_PRESETS[genre]
             bs = p["beat_strength"]
             bd = p["beat_decay"]
@@ -129,11 +176,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     of = int(ot * fps)
                     if of < total_f:
                         onset_envelope[of] = 1.0
-        else:
-            bs, bd, op, bc = 0, 50, 0, 30
-            rhythm_tracking = False
 
-        # Rhythm Tracking — attivato dal preset genere
         if rhythm_tracking:
             tempogram = librosa.feature.tempogram(y=y, sr=sr)
             tempo_local = tempogram.max(axis=0).astype(float)
@@ -152,7 +195,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             rhythm_envelope = np.convolve(rhythm_envelope, kernel, mode='same')
             rhythm_envelope = np.clip(rhythm_envelope / (rhythm_envelope.max() + 1e-6), 0.0, 1.0)
 
-    # --- CACHE FOTO con limite massimo ---
+    # --- CACHE ---
     MAX_CACHE = 400
     cached_picks = {}
     cache_keys_order = []
@@ -165,202 +208,269 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             cache_keys_order.append(key)
         cached_picks[key] = val
 
-    # --- POWER CURVE semplificata: chaos controlla solo intensità strisce ---
+    # --- POWER CURVE ---
     c_n = chaos_val / 100.0
     sv = int(85 * (1 - c_n) + 2)
     pv = min(int(100 * (1 - c_n) + 5), 100)
     ev = int(75 * (1 - c_n) + 2)
 
-    def make_frame(t):
-        f = int(t * fps)
-        if f >= total_f: f = total_f - 1
-        prog_bar.progress(f / total_f)
-        prog = t / max_limit
+    # =========================================================
+    # MODALITÀ SLIDESHOW
+    # =========================================================
+    if slideshow_mode and pool_imgs:
+        slide_cycle = slide_hold + slide_trans  # durata di un ciclo foto
+        n_photos = len(pool_imgs)
 
-        # --- SELEZIONE FOTO: logica transizione M1 → Calderone → M2 ---
-        has_masters = (img_m1 is not None) and (img_m2 is not None)
+        def make_frame_slideshow(t):
+            f = int(t * fps)
+            if f >= total_f: f = total_f - 1
+            prog_bar.progress(f / total_f)
 
-        if has_masters:
-            # M1 intera fino a m1_end, poi solo Calderone, poi M2 intera da m2_start
-
-            if prog <= m1_end:
-                # M1 si disintegra mentre il Calderone appare
-                # all'inizio M1 domina, alla fine Calderone domina
-                _ramp_m1 = np.clip(prog / m1_end if m1_end > 0.001 else 1.0, 0.0, 1.0)
-                if _ramp_m1 < 0.02:
-                    # Primissimi frame — M1 intera a piena risoluzione
-                    return cv2.resize(img_m1, (out_w, out_h))
-                _m1_prob = 1.0 - _ramp_m1  # M1 scende da 1 a 0
-                def pick():
-                    key = f // max(1, int(fps / photo_speed))
-                    if key in cached_picks and random.random() > 0.1:
-                        return cached_picks[key]
-                    if random.random() < _m1_prob:
-                        res = img_m1_half
-                    else:
-                        res = random.choice(pool_imgs)
-                    cache_set(key, res)
-                    return res
-            elif prog >= m2_start:
-                # M2 si ricompone mentre il Calderone scompare
-                # all'inizio Calderone domina, alla fine M2 domina
-                _span_m2 = 1.0 - m2_start if m2_start < 0.999 else 1e-6
-                _ramp_m2 = np.clip((prog - m2_start) / _span_m2, 0.0, 1.0)
-                if _ramp_m2 > 0.98:
-                    # Ultimissimi frame — M2 intera a piena risoluzione
-                    return cv2.resize(img_m2, (out_w, out_h))
-                _m2_prob = _ramp_m2  # M2 sale da 0 a 1
-                def pick():
-                    key = f // max(1, int(fps / photo_speed))
-                    if key in cached_picks and random.random() > 0.1:
-                        return cached_picks[key]
-                    if random.random() < _m2_prob:
-                        res = img_m2_half
-                    else:
-                        res = random.choice(pool_imgs)
-                    cache_set(key, res)
-                    return res
+            # Indice foto corrente e progresso dentro il ciclo
+            cycle_pos = t % slide_cycle
+            if seq_mode:
+                idx_cur  = int(t / slide_cycle) % n_photos
             else:
-                # Solo Calderone puro — glitch tra i due master
+                # random ma stabile per ciclo
+                cycle_idx = int(t / slide_cycle)
+                random.seed(cycle_idx * 9999)
+                idx_cur = random.randint(0, n_photos - 1)
+                random.seed()  # reset seed
+
+            idx_next = (idx_cur + 1) % n_photos
+
+            img_cur  = pool_imgs[idx_cur]
+            img_next = pool_imgs[idx_next]
+
+            if cycle_pos < slide_hold:
+                # Foto ferma — nessun glitch
+                out = cv2.resize(img_cur, (out_w, out_h))
+            else:
+                # Transizione glitch
+                trans_prog = (cycle_pos - slide_hold) / max(slide_trans, 0.001)
+                trans_prog = np.clip(trans_prog, 0.0, 1.0)
+
+                if slide_trans_type == "Glitch Burst":
+                    # Foto ferma → esplode in glitch → foto successiva appare
+                    # Prima metà: glitch esplode su img_cur
+                    # Seconda metà: glitch si calma su img_next
+                    if trans_prog < 0.5:
+                        intensity = trans_prog * 2.0  # 0→1
+                        base  = img_cur
+                        dest  = img_next
+                    else:
+                        intensity = (1.0 - trans_prog) * 2.0  # 1→0
+                        base  = img_next
+                        dest  = img_next
+                    glitched = apply_glitch_stripes(base, dest, h, w, orientation, strand_val, rand_lines, intensity)
+                    out = cv2.resize(glitched, (out_w, out_h))
+
+                else:  # Dissolve Glitchato
+                    # Le due foto si mescolano con strisce durante tutta la transizione
+                    # Intensità glitch: curva a campana (massimo a metà transizione)
+                    intensity = np.sin(trans_prog * np.pi)  # 0→1→0
+                    # Blend lineare cur→next modulato dal glitch
+                    blend = (img_cur * (1.0 - trans_prog) + img_next * trans_prog).astype(np.uint8)
+                    glitched = apply_glitch_stripes(blend, blend, h, w, orientation, strand_val, rand_lines, intensity)
+                    out = cv2.resize(glitched, (out_w, out_h))
+
+            return out
+
+        clip = VideoClip(make_frame_slideshow, duration=max_limit)
+
+    # =========================================================
+    # MODALITÀ NORMALE (originale)
+    # =========================================================
+    else:
+        def make_frame(t):
+            f = int(t * fps)
+            if f >= total_f: f = total_f - 1
+            prog_bar.progress(f / total_f)
+            prog = t / max_limit
+
+            has_masters = (img_m1 is not None) and (img_m2 is not None)
+
+            if has_masters:
+                if prog <= m1_end:
+                    _ramp_m1 = np.clip(prog / m1_end if m1_end > 0.001 else 1.0, 0.0, 1.0)
+                    if _ramp_m1 < 0.02:
+                        return cv2.resize(img_m1, (out_w, out_h))
+                    _m1_prob = 1.0 - _ramp_m1
+                    def pick():
+                        key = f // max(1, int(fps / photo_speed))
+                        if key in cached_picks and random.random() > 0.1:
+                            return cached_picks[key]
+                        if random.random() < _m1_prob:
+                            res = img_m1_half
+                        else:
+                            idx = (key % len(pool_imgs)) if seq_mode else None
+                            res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
+                        cache_set(key, res)
+                        return res
+                elif prog >= m2_start:
+                    _span_m2 = 1.0 - m2_start if m2_start < 0.999 else 1e-6
+                    _ramp_m2 = np.clip((prog - m2_start) / _span_m2, 0.0, 1.0)
+                    if _ramp_m2 > 0.98:
+                        return cv2.resize(img_m2, (out_w, out_h))
+                    _m2_prob = _ramp_m2
+                    def pick():
+                        key = f // max(1, int(fps / photo_speed))
+                        if key in cached_picks and random.random() > 0.1:
+                            return cached_picks[key]
+                        if random.random() < _m2_prob:
+                            res = img_m2_half
+                        else:
+                            idx = (key % len(pool_imgs)) if seq_mode else None
+                            res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
+                        cache_set(key, res)
+                        return res
+                else:
+                    def pick():
+                        interval = max(1, int(fps / photo_speed))
+                        key = f // interval
+                        force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
+                        if key in cached_picks and not force and random.random() > 0.1:
+                            return cached_picks[key]
+                        idx = (key % len(pool_imgs)) if seq_mode else None
+                        res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
+                        cache_set(key, res)
+                        return res
+            else:
                 def pick():
-                    interval = max(1, int(fps / photo_speed))
+                    if rhythm_envelope is not None:
+                        speed_mod = max(1, photo_speed * (0.2 + rhythm_envelope[f] * 0.8))
+                    else:
+                        speed_mod = photo_speed
+                    interval = max(1, int(fps / speed_mod))
                     key = f // interval
-                    force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
+                    force = onset_envelope[f] > 0 and beat_sync and random.random() < (bc / 100.0) if beat_sync else False
                     if key in cached_picks and not force and random.random() > 0.1:
                         return cached_picks[key]
-                    res = random.choice(pool_imgs)
+                    idx = (key % len(pool_imgs)) if seq_mode else None
+                    res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
                     cache_set(key, res)
                     return res
-        else:
-            # Solo Calderone
-            def pick():
-                if rhythm_envelope is not None:
-                    speed_mod = max(1, photo_speed * (0.2 + rhythm_envelope[f] * 0.8))
+
+            has_masters_val = (img_m1 is not None) and (img_m2 is not None)
+
+            if rhythm_envelope is not None:
+                val_base = rhythm_envelope[f]
+            else:
+                mid = 0.5
+                v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
+                val_base = (v_base / 100.0) * audio_envelope[f]
+
+            if beat_sync and beat_envelope[f] > 0:
+                val_base = val_base * (1.0 + beat_envelope[f] * (bs / 100.0))
+
+            if has_masters_val:
+                if prog <= m1_end:
+                    ramp = prog / m1_end if m1_end > 0.001 else 1.0
+                    val = val_base * np.clip(ramp, 0.0, 1.0)
+                elif prog >= m2_start:
+                    span = 1.0 - m2_start if m2_start < 0.999 else 1e-6
+                    ramp = 1.0 - ((prog - m2_start) / span)
+                    val = val_base * np.clip(ramp, 0.0, 1.0)
                 else:
-                    speed_mod = photo_speed
-                interval = max(1, int(fps / speed_mod))
-                key = f // interval
-                force = onset_envelope[f] > 0 and beat_sync and random.random() < (bc / 100.0) if beat_sync else False
-                if key in cached_picks and not force and random.random() > 0.1:
-                    return cached_picks[key]
-                res = random.choice(pool_imgs)
-                cache_set(key, res)
-                return res
-
-        # --- VAL: rampa nelle zone M1/M2, pieno nel Calderone ---
-        has_masters_val = (img_m1 is not None) and (img_m2 is not None)
-
-        # Calcola val base
-        if rhythm_envelope is not None:
-            val_base = rhythm_envelope[f]
-        else:
-            mid = 0.5
-            v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
-            val_base = (v_base / 100.0) * audio_envelope[f]
-
-        if beat_sync and beat_envelope[f] > 0:
-            val_base = val_base * (1.0 + beat_envelope[f] * (bs / 100.0))
-
-        if has_masters_val:
-            if prog <= m1_end:
-                # M1: val sale da 0 a pieno — intera all'inizio, caos a m1_end
-                ramp = prog / m1_end if m1_end > 0.001 else 1.0
-                val = val_base * np.clip(ramp, 0.0, 1.0)
-            elif prog >= m2_start:
-                # M2: val scende da pieno a 0 — caos a m2_start, intera alla fine
-                span = 1.0 - m2_start if m2_start < 0.999 else 1e-6
-                ramp = 1.0 - ((prog - m2_start) / span)
-                val = val_base * np.clip(ramp, 0.0, 1.0)
+                    val = val_base
             else:
                 val = val_base
-        else:
-            val = val_base
 
-        # --- SHIFT con strand adattato alla mezza risoluzione ---
-        strand = max(1, strand_val // 2)
+            strand = max(1, strand_val // 2)
 
-        def get_b(max_d):
-            res, c = [], 0
-            while c < max_d:
-                sw = random.randint(max(2, int(strand*0.6)), int(strand*1.4)) if rand_lines else strand
-                res.append((c, min(c+sw, max_d)))
-                c += sw
-            return res
+            def get_b(max_d):
+                res, c = [], 0
+                while c < max_d:
+                    sw = random.randint(max(2, int(strand*0.6)), int(strand*1.4)) if rand_lines else strand
+                    res.append((c, min(c+sw, max_d)))
+                    c += sw
+                return res
 
-        if orientation == "Nessun Effetto":
-            return cv2.resize(pick(), (out_w, out_h))
+            if orientation == "Nessun Effetto":
+                return cv2.resize(pick(), (out_w, out_h))
 
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        if orientation == "Orizzontale":
-            for s, e in get_b(h):
-                target = pick()
-                shift = int(random.uniform(-250, 250) * val)
-                frame[s:e, :] = np.roll(target[s:e, :], shift, axis=1)
-
-        elif orientation == "Verticale":
-            for s, e in get_b(w):
-                target = pick()
-                shift = int(random.uniform(-250, 250) * val)
-                frame[:, s:e] = np.roll(target[:, s:e], shift, axis=0)
-
-        elif orientation == "Mix (H+V)":
-            for s, e in get_b(h):
-                target = pick()
-                shift = int(random.uniform(-250, 250) * val)
-                frame[s:e, :] = np.roll(target[s:e, :], shift, axis=1)
-            for s, e in get_b(w):
-                if random.random() > 0.5:
-                    shift_v = int(random.uniform(-200, 200) * val)
-                    frame[:, s:e] = np.roll(frame[:, s:e], shift_v, axis=0)
-
-        elif orientation == "Mosaico":
-            # OTTIMIZZATO: roll sull'intero frame, poi patch — non patch per patch
-            target = pick()
-            shift_h = int(random.uniform(-250, 250) * val)
-            shift_v = int(random.uniform(-250, 250) * val)
-            rolled = np.roll(np.roll(target, shift_h, axis=1), shift_v, axis=0)
-            bh_list = get_b(h)
-            bw_list = get_b(w)
-            for bh in bh_list:
-                for bw in bw_list:
-                    # Alterna tra frame originale e rolled per effetto mosaico
+            if orientation == "Orizzontale":
+                for s, e in get_b(h):
+                    target = pick()
+                    shift = int(random.uniform(-250, 250) * val)
+                    frame[s:e, :] = np.roll(target[s:e, :], shift, axis=1)
+            elif orientation == "Verticale":
+                for s, e in get_b(w):
+                    target = pick()
+                    shift = int(random.uniform(-250, 250) * val)
+                    frame[:, s:e] = np.roll(target[:, s:e], shift, axis=0)
+            elif orientation == "Mix (H+V)":
+                for s, e in get_b(h):
+                    target = pick()
+                    shift = int(random.uniform(-250, 250) * val)
+                    frame[s:e, :] = np.roll(target[s:e, :], shift, axis=1)
+                for s, e in get_b(w):
                     if random.random() > 0.5:
-                        frame[bh[0]:bh[1], bw[0]:bw[1]] = rolled[bh[0]:bh[1], bw[0]:bw[1]]
-                    else:
-                        frame[bh[0]:bh[1], bw[0]:bw[1]] = target[bh[0]:bh[1], bw[0]:bw[1]]
+                        shift_v = int(random.uniform(-200, 200) * val)
+                        frame[:, s:e] = np.roll(frame[:, s:e], shift_v, axis=0)
+            elif orientation == "Mosaico":
+                target = pick()
+                shift_h = int(random.uniform(-250, 250) * val)
+                shift_v = int(random.uniform(-250, 250) * val)
+                rolled = np.roll(np.roll(target, shift_h, axis=1), shift_v, axis=0)
+                bh_list = get_b(h)
+                bw_list = get_b(w)
+                for bh in bh_list:
+                    for bw in bw_list:
+                        if random.random() > 0.5:
+                            frame[bh[0]:bh[1], bw[0]:bw[1]] = rolled[bh[0]:bh[1], bw[0]:bw[1]]
+                        else:
+                            frame[bh[0]:bh[1], bw[0]:bw[1]] = target[bh[0]:bh[1], bw[0]:bw[1]]
 
-        # Upscale a risoluzione finale
-        return cv2.resize(frame, (out_w, out_h))
+            return cv2.resize(frame, (out_w, out_h))
 
-    clip = VideoClip(make_frame, duration=max_limit)
+        clip = VideoClip(make_frame, duration=max_limit)
+
+    # --- AUDIO ---
     if temp_aud_path:
         audio_clip = AudioFileClip(temp_aud_path)
         if audio_clip.duration < max_limit: audio_clip = audio_loop(audio_clip, duration=max_limit)
         else: audio_clip = audio_clip.set_duration(max_limit)
         clip = clip.set_audio(audio_clip)
 
+    # --- NOMI FILE con timestamp condiviso ---
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = f"video_dissection_{ts}"
+
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None,
                          fps=fps, bitrate="5000k", logger=None)
 
-    rhythm_on = beat_sync and GENRE_PRESETS[genre]["rhythm"]
+    rhythm_on = beat_sync and not slideshow_mode and GENRE_PRESETS[genre]["rhythm"]
+
+    slide_info = ""
+    if slideshow_mode:
+        slide_info = f"""
+* MODALITÀ: SLIDESHOW LENTO
+* Durata foto: {slide_hold}s | Transizione: {slide_trans}s
+* Tipo transizione: {slide_trans_type}
+* Sequenza: {'ORDINATA' if seq_mode else 'RANDOM'}"""
+
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
-:: MOTORE: recursive_cut_pro [v9.0]
+:: MOTORE: recursive_cut_pro [v9.1]
 :: EFFETTO: Recursive Strand Shift
 :: ANALISI: RMS / Beat Sync / Rhythm Tracking
 :: PROCESSO: Frammentazione Ricorsiva
 "L'immagine e' stata smontata. Il codice ne ha riscritto la struttura."
 
 > TECHNICAL LOG SHEET:
+* File: {base_name}
 * Asset Pool: {len(pool_imgs)} foto
 * Rendering: {total_f} frame @ {fps}fps
 * Geometria: {orientation} @ {strand_val}px
 * Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
 * M1 sparisce a: {int(m1_end*100)}% | M2 appare a: {int(m2_start*100)}%
 * Audio Peak: {audio_peak:.4f}
-* Beat Sync: {'ON' if beat_sync else 'OFF'}
+* Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
+* Sequenza Calderone: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}
 
 > Regia e Algoritmo: Loop507
 
@@ -371,7 +481,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     with open(r_out, "w") as f: f.write(report_text)
     if temp_aud_path: os.remove(temp_aud_path)
     gc.collect()
-    return v_out, r_out
+    return v_out, r_out, base_name
+
 
 # =====================================================================
 # INTERFACCIA
@@ -391,7 +502,6 @@ with c1:
 with c2:
     st.subheader("✂️ Controllo")
 
-    # Transizione — compare solo se entrambi i master sono caricati
     has_masters = (up_m1 is not None) and (up_m2 is not None)
     if has_masters:
         st.caption("Transizione M1 → Calderone → M2")
@@ -411,6 +521,10 @@ with c2:
     rand_l = st.toggle("Dynamic Slicing", value=True)
     mode   = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
 
+    st.divider()
+    seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
+        help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
+
 with c3:
     st.subheader("🎬 Rendering")
     fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
@@ -418,31 +532,53 @@ with c3:
 
     st.divider()
 
-    # Sync audio — un solo toggle + preset genere
     beat_sync = st.toggle("🎵 A tempo di musica", value=False,
-        help="Attiva solo se hai caricato un audio. Il genere determina automaticamente beat, onset e rhythm tracking.")
+        help="Attiva solo se hai caricato un audio. Disabilitato in modalità Slideshow.")
     genre = "Techno / House"
     if beat_sync:
         genre = st.selectbox("Genere", list(GENRE_PRESETS.keys()))
 
     st.divider()
 
+    slideshow_mode = st.toggle("📽️ Modalità Slideshow", value=False,
+        help="Sfoglia le foto lentamente con transizioni glitch. Il ritmo è controllato dagli slider, non dal beat.")
+    slide_hold       = 3.0
+    slide_trans      = 2.0
+    slide_trans_type = "Dissolve Glitchato"
+    if slideshow_mode:
+        slide_hold       = st.slider("🖼️ Durata foto (sec)",        1.0, 15.0, 3.0, step=0.5)
+        slide_trans      = st.slider("🌀 Durata transizione (sec)",  0.5, 10.0, 2.0, step=0.5)
+        slide_trans_type = st.radio("Tipo transizione",
+            ["Dissolve Glitchato", "Glitch Burst"],
+            help="Dissolve: le foto si mescolano con glitch. Burst: foto ferma → esplode → foto nuova.")
+
+    st.divider()
+
     if st.button("🚀 AVVIA DISSEZIONE"):
-        v, r = generate_master(
+        v, r, base_name = generate_master(
             up_m1, up_m2, up_t, up_a,
             mode, lines, dur,
             chaos, speed, fmt,
             m1_end_t, m2_start_t,
             rand_l,
-            beat_sync, genre
+            beat_sync, genre,
+            seq_mode,
+            slideshow_mode, slide_hold, slide_trans, slide_trans_type
         )
-        st.session_state.v_path, st.session_state.r_path = v, r
+        st.session_state.v_path  = v
+        st.session_state.r_path  = r
+        st.session_state.file_ts = base_name
 
     if st.session_state.v_path:
         st.video(st.session_state.v_path)
+        base = st.session_state.file_ts or "video_dissection"
         st.download_button("💾 DOWNLOAD VIDEO",
-            open(st.session_state.v_path, "rb"), "video_dissection.mp4")
+            open(st.session_state.v_path, "rb"),
+            file_name=f"{base}.mp4")
         if st.session_state.r_path:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
-            st.download_button("📄 SCARICA REPORT", r_txt, "report_dissection.txt")
+            st.download_button("📄 SCARICA REPORT", r_txt,
+                file_name=f"{base}_report.txt")  
+
+    
