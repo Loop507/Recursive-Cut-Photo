@@ -108,8 +108,12 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     total_f = int(max_limit * fps)
     prog_bar = st.progress(0)
 
-    def load_img_full(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=False)
-    def load_img_half(f): return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True)
+    def load_img_full(f):
+        f.seek(0)
+        return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=False)
+    def load_img_half(f):
+        f.seek(0)
+        return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True)
 
     img_m1 = load_img_full(up_m1) if up_m1 else None
     img_m2 = load_img_full(up_m2) if up_m2 else None
@@ -579,6 +583,4 @@ with c3:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
             st.download_button("📄 SCARICA REPORT", r_txt,
-                file_name=f"{base}_report.txt")  
-
-    
+                file_name=f"{base}_report.txt")
