@@ -95,20 +95,33 @@ def apply_glitch_stripes(src, dst, h, w, orientation, strand_val, rand_lines, va
     return (frame * alpha + dst * (1.0 - alpha)).astype(np.uint8)
 
 
-def apply_stripe_mask(clean_frame, glitch_frame, h, w, stripes, stripe_orientation):
-    """Applica il glitch solo nelle fasce definite; il resto resta pulito."""
-    out = clean_frame.copy()
+def apply_stripe_mask(clean_frame, glitch_frame, h, w, stripes, stripe_orientation,
+                      bg_moving=False, reverse=False):
+    """
+    Applica la maschera a strisce.
+    bg_moving: True = fuori dalle strisce il glitch continua (sfondo mosso)
+    reverse:   True = strisce ferme, tutto il resto glitchato (inverso)
+    """
+    # base: fermo o mosso fuori dalle strisce
+    out = glitch_frame.copy() if bg_moving else clean_frame.copy()
+
     for (pos, size) in stripes:
         if stripe_orientation == "Orizzontale":
             y0 = int(np.clip(pos / 100.0, 0.0, 1.0) * h)
             y1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * h)
             if y1 > y0:
-                out[y0:y1, :] = glitch_frame[y0:y1, :]
+                if reverse:
+                    out[y0:y1, :] = clean_frame[y0:y1, :]   # striscia ferma
+                else:
+                    out[y0:y1, :] = glitch_frame[y0:y1, :]  # striscia glitchata
         else:
             x0 = int(np.clip(pos / 100.0, 0.0, 1.0) * w)
             x1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * w)
             if x1 > x0:
-                out[:, x0:x1] = glitch_frame[:, x0:x1]
+                if reverse:
+                    out[:, x0:x1] = clean_frame[:, x0:x1]
+                else:
+                    out[:, x0:x1] = glitch_frame[:, x0:x1]
     return out
 
 
@@ -120,7 +133,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     beat_sync, genre,
                     seq_mode,
                     slideshow_mode, slide_hold, slide_trans, slide_trans_type,
-                    stripe_mode=False, stripes=None, stripe_orientation="Orizzontale"):
+                    stripe_mode=False, stripes=None, stripe_orientation="Orizzontale",
+                    stripe_bg_moving=False, stripe_reverse=False):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -284,7 +298,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     glitched = apply_glitch_stripes(base, dest, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes:
                         clean = cv2.resize(base, (h, w)) if base.shape[:2] != (h, w) else base
-                        glitched = apply_stripe_mask(clean, glitched, h, w, stripes, stripe_orientation)
+                        glitched = apply_stripe_mask(clean, glitched, h, w, stripes, stripe_orientation,
+                                                     stripe_bg_moving, stripe_reverse)
                     out = cv2.resize(glitched, (out_w, out_h))
 
                 else:  # Dissolve Glitchato
@@ -292,7 +307,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     blend = (img_cur * (1.0 - trans_prog) + img_next * trans_prog).astype(np.uint8)
                     glitched = apply_glitch_stripes(blend, blend, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes:
-                        glitched = apply_stripe_mask(blend, glitched, h, w, stripes, stripe_orientation)
+                        glitched = apply_stripe_mask(blend, glitched, h, w, stripes, stripe_orientation,
+                                                     stripe_bg_moving, stripe_reverse)
                     out = cv2.resize(glitched, (out_w, out_h))
 
             return out
@@ -447,7 +463,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
             if stripe_mode and stripes:
                 clean = pick()
-                frame = apply_stripe_mask(clean, frame, h, w, stripes, stripe_orientation)
+                frame = apply_stripe_mask(clean, frame, h, w, stripes, stripe_orientation,
+                                          stripe_bg_moving, stripe_reverse)
 
             return cv2.resize(frame, (out_w, out_h))
 
@@ -549,24 +566,78 @@ with c2:
     st.divider()
 
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False,
-        help="Il glitch agisce solo nelle fasce che definisci. Il resto della foto resta fermo.")
+        help="Definisci fasce dove agisce il glitch. Il resto segue le opzioni qui sotto.")
 
     stripes = []
     stripe_orientation = "Orizzontale"
+    stripe_bg_moving   = False
+    stripe_reverse     = False
+
     if stripe_mode:
         stripe_orientation = st.radio("Orientamento strisce", ["Orizzontale", "Verticale"], horizontal=True)
         n_stripes = st.number_input("Numero di strisce", min_value=1, max_value=6, value=1, step=1)
-        dir_label = "verticale" if stripe_orientation == "Verticale" else "verticale"
-        for i in range(n_stripes):
+
+        for i in range(int(n_stripes)):
             st.caption(f"Striscia {i+1}")
             col_a, col_b = st.columns(2)
             with col_a:
-                pos = st.slider(f"Posizione {i+1} (%)", 0, 95, min(20 + i*25, 90), key=f"sp_{i}",
-                    help="Dove inizia la striscia (da cima o da sinistra)")
+                pos  = st.slider(f"Posizione {i+1} (%)", 0, 95, min(20 + i*25, 90), key=f"sp_{i}",
+                    help="Da dove inizia la striscia (0=cima/sinistra, 100=fondo/destra)")
             with col_b:
                 size = st.slider(f"Larghezza {i+1} (%)", 1, 50, 10, key=f"ss_{i}",
-                    help="Quanto è larga la striscia")
+                    help="Quanto è larga")
             stripes.append((pos, size))
+
+        st.divider()
+
+        # --- ANTEPRIMA STRISCE ---
+        preview_choices = []
+        preview_files   = {}
+        if up_m1:  preview_choices.append("Master 1");        preview_files["Master 1"]        = up_m1
+        if up_m2:  preview_choices.append("Master 2");        preview_files["Master 2"]        = up_m2
+        if up_t:   preview_choices.append("Prima foto Calderone"); preview_files["Prima foto Calderone"] = up_t[0]
+
+        if preview_choices:
+            prev_sel = st.selectbox("🖼️ Anteprima su", preview_choices)
+            pf = preview_files[prev_sel]
+            pf.seek(0)
+            prev_img = np.array(Image.open(pf).convert("RGB"))
+            ph, pw   = prev_img.shape[:2]
+            # scala piccola per display (max 300px lato lungo)
+            scale    = 300 / max(ph, pw)
+            dw, dh   = int(pw * scale), int(ph * scale)
+            prev_small = cv2.resize(prev_img, (dw, dh))
+            # disegna le strisce colorate sopra
+            overlay = prev_small.copy()
+            for (pos, size) in stripes:
+                if stripe_orientation == "Orizzontale":
+                    y0 = int(np.clip(pos / 100.0, 0, 1) * dh)
+                    y1 = int(np.clip((pos + size) / 100.0, 0, 1) * dh)
+                    overlay[y0:y1, :] = (overlay[y0:y1, :] * 0.4 + np.array([120, 80, 220]) * 0.6).astype(np.uint8)
+                    if y0 > 0:            overlay[max(0,y0-2):y0, :]   = [120, 80, 220]
+                    if y1 < dh:           overlay[y1:min(dh,y1+2), :]  = [120, 80, 220]
+                else:
+                    x0 = int(np.clip(pos / 100.0, 0, 1) * dw)
+                    x1 = int(np.clip((pos + size) / 100.0, 0, 1) * dw)
+                    overlay[:, x0:x1] = (overlay[:, x0:x1] * 0.4 + np.array([120, 80, 220]) * 0.6).astype(np.uint8)
+                    if x0 > 0:            overlay[:, max(0,x0-2):x0]   = [120, 80, 220]
+                    if x1 < dw:           overlay[:, x1:min(dw,x1+2)]  = [120, 80, 220]
+            st.image(overlay, caption="Anteprima strisce (viola = zona glitch)", use_container_width=False)
+        else:
+            st.caption("Carica almeno una foto per vedere l'anteprima.")
+
+        st.divider()
+
+        # --- SFONDO E REVERSE ---
+        stripe_bg_moving = st.radio(
+            "Fuori dalle strisce",
+            ["Foto ferma", "Foto in movimento"],
+            horizontal=True,
+            help="Fermo = frame pulito fuori dalle fasce. Movimento = glitch normale anche fuori."
+        ) == "Foto in movimento"
+
+        stripe_reverse = st.toggle("🔄 Reverse",
+            help="Inverte la maschera: strisce ferme, tutto il resto glitchato.")
 
     st.divider()
     seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
@@ -611,7 +682,8 @@ with c3:
             beat_sync, genre,
             seq_mode,
             slideshow_mode, slide_hold, slide_trans, slide_trans_type,
-            stripe_mode, stripes, stripe_orientation
+            stripe_mode, stripes, stripe_orientation,
+            stripe_bg_moving, stripe_reverse
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
