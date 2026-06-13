@@ -95,6 +95,23 @@ def apply_glitch_stripes(src, dst, h, w, orientation, strand_val, rand_lines, va
     return (frame * alpha + dst * (1.0 - alpha)).astype(np.uint8)
 
 
+def apply_stripe_mask(clean_frame, glitch_frame, h, w, stripes, stripe_orientation):
+    """Applica il glitch solo nelle fasce definite; il resto resta pulito."""
+    out = clean_frame.copy()
+    for (pos, size) in stripes:
+        if stripe_orientation == "Orizzontale":
+            y0 = int(np.clip(pos / 100.0, 0.0, 1.0) * h)
+            y1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * h)
+            if y1 > y0:
+                out[y0:y1, :] = glitch_frame[y0:y1, :]
+        else:
+            x0 = int(np.clip(pos / 100.0, 0.0, 1.0) * w)
+            x1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * w)
+            if x1 > x0:
+                out[:, x0:x1] = glitch_frame[:, x0:x1]
+    return out
+
+
 def generate_master(up_m1, up_m2, up_trit, up_aud,
                     orientation, strand_val, max_limit,
                     chaos_val, photo_speed, format_type,
@@ -102,7 +119,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     rand_lines,
                     beat_sync, genre,
                     seq_mode,
-                    slideshow_mode, slide_hold, slide_trans, slide_trans_type):
+                    slideshow_mode, slide_hold, slide_trans, slide_trans_type,
+                    stripe_mode=False, stripes=None, stripe_orientation="Orizzontale"):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -255,27 +273,26 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 trans_prog = np.clip(trans_prog, 0.0, 1.0)
 
                 if slide_trans_type == "Glitch Burst":
-                    # Foto ferma → esplode in glitch → foto successiva appare
-                    # Prima metà: glitch esplode su img_cur
-                    # Seconda metà: glitch si calma su img_next
                     if trans_prog < 0.5:
-                        intensity = trans_prog * 2.0  # 0→1
+                        intensity = trans_prog * 2.0
                         base  = img_cur
                         dest  = img_next
                     else:
-                        intensity = (1.0 - trans_prog) * 2.0  # 1→0
+                        intensity = (1.0 - trans_prog) * 2.0
                         base  = img_next
                         dest  = img_next
                     glitched = apply_glitch_stripes(base, dest, h, w, orientation, strand_val, rand_lines, intensity)
+                    if stripe_mode and stripes:
+                        clean = cv2.resize(base, (h, w)) if base.shape[:2] != (h, w) else base
+                        glitched = apply_stripe_mask(clean, glitched, h, w, stripes, stripe_orientation)
                     out = cv2.resize(glitched, (out_w, out_h))
 
                 else:  # Dissolve Glitchato
-                    # Le due foto si mescolano con strisce durante tutta la transizione
-                    # Intensità glitch: curva a campana (massimo a metà transizione)
-                    intensity = np.sin(trans_prog * np.pi)  # 0→1→0
-                    # Blend lineare cur→next modulato dal glitch
+                    intensity = np.sin(trans_prog * np.pi)
                     blend = (img_cur * (1.0 - trans_prog) + img_next * trans_prog).astype(np.uint8)
                     glitched = apply_glitch_stripes(blend, blend, h, w, orientation, strand_val, rand_lines, intensity)
+                    if stripe_mode and stripes:
+                        glitched = apply_stripe_mask(blend, glitched, h, w, stripes, stripe_orientation)
                     out = cv2.resize(glitched, (out_w, out_h))
 
             return out
@@ -428,6 +445,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         else:
                             frame[bh[0]:bh[1], bw[0]:bw[1]] = target[bh[0]:bh[1], bw[0]:bw[1]]
 
+            if stripe_mode and stripes:
+                clean = pick()
+                frame = apply_stripe_mask(clean, frame, h, w, stripes, stripe_orientation)
+
             return cv2.resize(frame, (out_w, out_h))
 
         clip = VideoClip(make_frame, duration=max_limit)
@@ -526,6 +547,28 @@ with c2:
     mode   = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
 
     st.divider()
+
+    stripe_mode = st.toggle("🎯 Strisce Selettive", value=False,
+        help="Il glitch agisce solo nelle fasce che definisci. Il resto della foto resta fermo.")
+
+    stripes = []
+    stripe_orientation = "Orizzontale"
+    if stripe_mode:
+        stripe_orientation = st.radio("Orientamento strisce", ["Orizzontale", "Verticale"], horizontal=True)
+        n_stripes = st.number_input("Numero di strisce", min_value=1, max_value=6, value=1, step=1)
+        dir_label = "verticale" if stripe_orientation == "Verticale" else "verticale"
+        for i in range(n_stripes):
+            st.caption(f"Striscia {i+1}")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                pos = st.slider(f"Posizione {i+1} (%)", 0, 95, min(20 + i*25, 90), key=f"sp_{i}",
+                    help="Dove inizia la striscia (da cima o da sinistra)")
+            with col_b:
+                size = st.slider(f"Larghezza {i+1} (%)", 1, 50, 10, key=f"ss_{i}",
+                    help="Quanto è larga la striscia")
+            stripes.append((pos, size))
+
+    st.divider()
     seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
         help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
 
@@ -567,7 +610,8 @@ with c3:
             rand_l,
             beat_sync, genre,
             seq_mode,
-            slideshow_mode, slide_hold, slide_trans, slide_trans_type
+            slideshow_mode, slide_hold, slide_trans, slide_trans_type,
+            stripe_mode, stripes, stripe_orientation
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
