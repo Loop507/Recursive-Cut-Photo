@@ -9,14 +9,17 @@ import random
 import os
 import librosa
 import gc
+import json
 from datetime import datetime
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Recursive-Cut-Photo by Loop507", layout="wide")
 
-if 'v_path'  not in st.session_state: st.session_state.v_path  = None
-if 'r_path'  not in st.session_state: st.session_state.r_path  = None
-if 'file_ts' not in st.session_state: st.session_state.file_ts = None
+if 'v_path'       not in st.session_state: st.session_state.v_path       = None
+if 'r_path'       not in st.session_state: st.session_state.r_path       = None
+if 'file_ts'      not in st.session_state: st.session_state.file_ts      = None
+if 'preset'       not in st.session_state: st.session_state.preset       = None
+if 'frame_export' not in st.session_state: st.session_state.frame_export = None
 
 # --- PRESET GENERE ---
 GENRE_PRESETS = {
@@ -115,17 +118,33 @@ def compute_stripe_coords(center_pct, size_pct, length_pct, offset_pct, dim):
     return p0, p1, l0, l1
 
 
+def apply_chroma(patch, amount=6):
+    """Sfasa i canali R e B di ±amount pixel per chromatic aberration."""
+    out = patch.copy()
+    if amount < 1: return out
+    out[:, :, 2] = np.roll(patch[:, :, 2],  amount, axis=1)  # R → destra
+    out[:, :, 0] = np.roll(patch[:, :, 0], -amount, axis=1)  # B → sinistra
+    return out
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
                         stripe_reverse=False, audio_envelope_val=1.0,
-                        stripe_offsets=None):
+                        stripe_offsets=None,
+                        stripe_chroma=False, stripe_flash=False,
+                        beat_val=0.0):
     """
-    stripes: lista di dict con keys: center, size, length, length_audio, move_random, move_speed
-    stripe_offsets: lista di float (0-100) per il centro sull'asse secondario (movimento random precomputato)
-    audio_envelope_val: valore RMS corrente (0-1) per modulare la lunghezza
+    stripes: lista di dict con keys: center, size, length, length_audio,
+             move_random, move_speed, offset_length, chroma_amount
+    stripe_chroma:  aberrazione cromatica dentro la striscia
+    stripe_flash:   striscia si spegne (mostra bg) sui beat forti
+    beat_val:       valore beat envelope corrente (0-1)
     """
     if stripe_offsets is None:
         stripe_offsets = [50.0] * len(stripes)
+
+    # flash: se beat forte, la striscia scompare (mostra sfondo)
+    flash_active = stripe_flash and beat_val > 0.7
 
     src_calder = calder_glitch if stripe_glitch else calder_clean
 
@@ -136,31 +155,39 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         out = bg_frame.copy()
         src_stripe = src_calder
 
-    def _paste_h(p0, p1, l0, l1):
+    def _paste_h(p0, p1, l0, l1, chroma_amt):
         if p1 > p0 and l1 > l0:
-            out[p0:p1, l0:l1] = src_stripe[p0:p1, l0:l1]
+            patch = src_stripe[p0:p1, l0:l1].copy()
+            if stripe_chroma and chroma_amt > 0:
+                patch = apply_chroma(patch, chroma_amt)
+            out[p0:p1, l0:l1] = patch
 
-    def _paste_v(p0, p1, l0, l1):
+    def _paste_v(p0, p1, l0, l1, chroma_amt):
         if p1 > p0 and l1 > l0:
-            out[l0:l1, p0:p1] = src_stripe[l0:l1, p0:p1]
+            patch = src_stripe[l0:l1, p0:p1].copy()
+            if stripe_chroma and chroma_amt > 0:
+                patch = apply_chroma(patch, chroma_amt)
+            out[l0:l1, p0:p1] = patch
 
     def _draw(s, offset, is_h):
-        center  = s['center']
-        size    = s['size']
+        if flash_active:
+            return  # striscia spenta sul beat
+        center   = s['center']
+        size     = s['size']
         base_len = s['length']
         if s.get('length_audio', False):
             base_len = base_len * (0.2 + 0.8 * audio_envelope_val)
         base_len = np.clip(base_len, 1.0, 100.0)
-        # offset dx/sx dall'utente, sovrascrive il movimento random se presente
         length_offset = s.get('offset_length', 50.0)
         if s.get('move_random', False):
-            length_offset = offset  # offset random precomputato
+            length_offset = offset
+        chroma_amt = int(s.get('chroma_amount', 6))
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
-            _paste_h(p0, p1, l0, l1)
+            _paste_h(p0, p1, l0, l1, chroma_amt)
         else:
-            _paste_v(p0, p1, l0, l1)
+            _paste_v(p0, p1, l0, l1, chroma_amt)
 
     for idx, s in enumerate(stripes):
         offset = stripe_offsets[idx]
@@ -183,7 +210,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     seq_mode,
                     slideshow_mode, slide_hold, slide_trans, slide_trans_type,
                     stripe_mode=False, stripes=None, stripe_orientation="Orizzontale",
-                    stripe_bg="Master 1", stripe_glitch=False, stripe_reverse=False):
+                    stripe_bg="Master 1", stripe_glitch=False, stripe_reverse=False,
+                    stripe_chroma=False, stripe_flash=False):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -361,11 +389,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             _aenv = float(audio_envelope[f])
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
 
+            _bval = float(beat_envelope[f])
+
             if cycle_pos < slide_hold:
                 if stripe_mode and stripes:
                     out_frame = apply_stripe_window(_bg, img_cur, img_cur, h, w,
                                                     stripes, stripe_orientation, False,
-                                                    stripe_reverse, _aenv, _soff)
+                                                    stripe_reverse, _aenv, _soff,
+                                                    stripe_chroma, stripe_flash, _bval)
                 else:
                     out_frame = img_cur
                 return cv2.resize(out_frame, (out_w, out_h))
@@ -386,7 +417,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     if stripe_mode and stripes:
                         out_frame = apply_stripe_window(_bg, base, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
-                                                        stripe_reverse, _aenv, _soff)
+                                                        stripe_reverse, _aenv, _soff,
+                                                        stripe_chroma, stripe_flash, _bval)
                     else:
                         out_frame = glitched
                 else:
@@ -396,7 +428,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     if stripe_mode and stripes:
                         out_frame = apply_stripe_window(_bg, blend, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
-                                                        stripe_reverse, _aenv, _soff)
+                                                        stripe_reverse, _aenv, _soff,
+                                                        stripe_chroma, stripe_flash, _bval)
                     else:
                         out_frame = glitched
 
@@ -513,6 +546,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 return res
 
             _aenv = float(audio_envelope[f])
+            _bval = float(beat_envelope[f])
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
 
             if orientation == "Nessun Effetto":
@@ -522,7 +556,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     return cv2.resize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
-                                            _aenv, _soff),
+                                            _aenv, _soff, stripe_chroma, stripe_flash, _bval),
                         (out_w, out_h))
                 return cv2.resize(pick(), (out_w, out_h))
 
@@ -569,9 +603,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 _bg = stripe_bg_static if stripe_bg_static is not None else pick()
                 frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
                                             stripes, stripe_orientation, stripe_glitch,
-                                            stripe_reverse, _aenv, _soff)
+                                            stripe_reverse, _aenv, _soff,
+                                            stripe_chroma, stripe_flash, _bval)
 
-            return cv2.resize(frame, (out_w, out_h))
+            result = cv2.resize(frame, (out_w, out_h))
+            # salva primo frame per export
+            if f == 0 and 'preview_frame' not in st.session_state:
+                st.session_state.preview_frame = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+            return result
 
         clip = VideoClip(make_frame, duration=max_limit)
 
@@ -738,6 +777,17 @@ with c2:
             if move_random:
                 move_speed = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
 
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                chroma_on = st.toggle(f"🌈 Chroma aberration {i+1}", value=False, key=f"ch_{i}",
+                    help="Sfasa i canali RGB dentro la striscia")
+            with col_e2:
+                flash_on = st.toggle(f"⚡ Flash sul beat {i+1}", value=False, key=f"fl_{i}",
+                    help="La striscia lampeggia sui beat forti")
+            chroma_amount = 6
+            if chroma_on:
+                chroma_amount = st.slider(f"Intensità chroma {i+1}", 1, 30, 6, key=f"ca_{i}")
+
             # slider offset dx/sx (sposta la striscia sull'asse secondario)
             offset_length = st.slider(
                 f"↔ Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}",
@@ -751,6 +801,8 @@ with c2:
                 'move_random':   move_random,
                 'move_speed':    move_speed,
                 'offset_length': float(offset_length),
+                'chroma_amount': chroma_amount,
+                'flash':         flash_on,
             })
 
         st.divider()
@@ -807,6 +859,52 @@ with c2:
         else:
             st.caption("Carica almeno una foto per vedere l'anteprima.")
 
+        st.divider()
+
+        # --- EFFETTI GLOBALI STRISCIA ---
+        col_fx1, col_fx2 = st.columns(2)
+        with col_fx1:
+            stripe_chroma = st.toggle("🌈 Chroma (globale)", value=False, key="stripe_chroma_g",
+                help="Aberrazione cromatica su tutte le strisce")
+        with col_fx2:
+            stripe_flash = st.toggle("⚡ Flash beat (globale)", value=False, key="stripe_flash_g",
+                help="Tutte le strisce lampeggiano sui beat forti")
+
+        st.divider()
+
+        # --- PRESET ---
+        st.caption("💾 Preset strisce")
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            preset_data = {
+                "stripe_orientation": stripe_orientation,
+                "stripe_bg":          stripe_bg,
+                "stripe_glitch":      stripe_glitch,
+                "stripe_reverse":     stripe_reverse,
+                "stripe_chroma":      stripe_chroma,
+                "stripe_flash":       stripe_flash,
+                "stripes":            stripes,
+            }
+            st.download_button(
+                "📤 Esporta preset",
+                data=json.dumps(preset_data, indent=2),
+                file_name="stripe_preset.json",
+                mime="application/json",
+            )
+        with col_p2:
+            uploaded_preset = st.file_uploader("📥 Carica preset", type=["json"], key="preset_upload")
+            if uploaded_preset:
+                try:
+                    loaded = json.load(uploaded_preset)
+                    st.session_state.preset = loaded
+                    st.success("Preset caricato — ricarica la pagina per applicarlo.")
+                except Exception as e:
+                    st.error(f"Errore preset: {e}")
+
+    else:
+        stripe_chroma = False
+        stripe_flash  = False
+
     st.divider()
     seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
         help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
@@ -851,7 +949,8 @@ with c3:
             seq_mode,
             slideshow_mode, slide_hold, slide_trans, slide_trans_type,
             stripe_mode, stripes, stripe_orientation,
-            stripe_bg, stripe_glitch, stripe_reverse
+            stripe_bg, stripe_glitch, stripe_reverse,
+            stripe_chroma, stripe_flash
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
@@ -863,6 +962,32 @@ with c3:
         st.download_button("💾 DOWNLOAD VIDEO",
             open(st.session_state.v_path, "rb"),
             file_name=f"{base}.mp4")
+
+        # --- EXPORT FRAME SINGOLO ---
+        if stripe_mode:
+            st.divider()
+            st.caption("🖼️ Export frame singolo")
+            col_fr1, col_fr2 = st.columns([2,1])
+            with col_fr1:
+                frame_sec = st.slider("Secondo da esportare", 0.0, float(dur), 0.0, step=0.1)
+            with col_fr2:
+                if st.button("📸 Estrai frame"):
+                    cap = cv2.VideoCapture(st.session_state.v_path)
+                    cap.set(cv2.CAP_PROP_POS_MSEC, frame_sec * 1000)
+                    ret, frame_bgr = cap.read()
+                    cap.release()
+                    if ret:
+                        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                        pil_frame = Image.fromarray(frame_rgb)
+                        tmp_png = tempfile.mktemp(suffix=".png")
+                        pil_frame.save(tmp_png)
+                        st.session_state.frame_export = tmp_png
+            if st.session_state.frame_export and os.path.exists(st.session_state.frame_export):
+                st.image(st.session_state.frame_export, use_container_width=True)
+                st.download_button("💾 Scarica PNG",
+                    open(st.session_state.frame_export, "rb"),
+                    file_name=f"{base}_frame_{frame_sec:.1f}s.png")
+
         if st.session_state.r_path:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
