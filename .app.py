@@ -354,8 +354,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             img_cur  = pool_imgs[idx_cur]
             img_next = pool_imgs[idx_next]
 
-            # sfondo: statico o calderone
-            _bg = stripe_bg_static if stripe_bg_static is not None else img_cur
+            # sfondo: statico o calderone (usa img_next per differenziare da img_cur nella striscia)
+            _bg = stripe_bg_static if stripe_bg_static is not None else img_next
             _aenv = float(audio_envelope[f])
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
 
@@ -516,7 +516,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             if orientation == "Nessun Effetto":
                 if stripe_mode and stripes:
                     calder_clean = pick()
-                    _bg = stripe_bg_static if stripe_bg_static is not None else calder_clean
+                    _bg = stripe_bg_static if stripe_bg_static is not None else pick()
                     return cv2.resize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
@@ -564,7 +564,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
             # --- Stripe mode: componi sfondo + striscia ---
             if stripe_mode and stripes:
-                _bg = stripe_bg_static if stripe_bg_static is not None else calder_clean
+                _bg = stripe_bg_static if stripe_bg_static is not None else pick()
                 frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff)
@@ -621,7 +621,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Audio Peak: {audio_peak:.4f}
 * Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
-* Sequenza Calderone: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
+* Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
 
 > Regia e Algoritmo: Loop507
 
@@ -736,13 +736,18 @@ with c2:
             if move_random:
                 move_speed = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
 
+            # slider offset su/giù (sposta il centro sull'asse principale)
+            offset_center = st.slider(
+                f"↕ Offset su/giù {i+1} (%)", -50, 50, 0, key=f"oc_{i}",
+                help="Sposta la striscia su (negativo) o giù (positivo) rispetto al Centro")
+
             stripes.append({
-                'center':       center,
-                'size':         size,
-                'length':       float(length),
-                'length_audio': length_audio,
-                'move_random':  move_random,
-                'move_speed':   move_speed,
+                'center':        center + offset_center,
+                'size':          size,
+                'length':        float(length),
+                'length_audio':  length_audio,
+                'move_random':   move_random,
+                'move_speed':    move_speed,
             })
 
         st.divider()
