@@ -95,27 +95,50 @@ def apply_glitch_stripes(src, dst, h, w, orientation, strand_val, rand_lines, va
 
 
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
-                        stripes, stripe_orientation, stripe_glitch):
+                        stripes, stripe_orientation, stripe_glitch,
+                        stripe_reverse=False):
     """
-    Compone il frame finale in modalità striscia:
-    - bg_frame:     Master scelto, fermo, su tutta l'immagine
-    - calder_clean: foto Calderone corrente, NON glitchata (per striscia originale)
-    - calder_glitch: foto Calderone glitchata (per striscia glitchata)
-    - Le strisce ritagliano la zona corrispondente dal Calderone e la incollano sul bg
+    Compone il frame finale in modalità striscia.
+    stripe_reverse=False: strisce = Calderone, resto = Master (sfondo fermo)
+    stripe_reverse=True:  strisce = Master (fermo), resto = Calderone
+    stripe_orientation può essere "Orizzontale", "Verticale" o "Mix H+V"
     """
-    out = bg_frame.copy()
-    src = calder_glitch if stripe_glitch else calder_clean
-    for (pos, size) in stripes:
-        if stripe_orientation == "Orizzontale":
+    src_calder = calder_glitch if stripe_glitch else calder_clean
+
+    if stripe_reverse:
+        # base = Calderone, le strisce mostrano il Master fermo
+        out = src_calder.copy()
+        src_stripe = bg_frame
+    else:
+        # base = Master fermo, le strisce mostrano il Calderone
+        out = bg_frame.copy()
+        src_stripe = src_calder
+
+    def _apply_h(stripes_list):
+        for (pos, size) in stripes_list:
             y0 = int(np.clip(pos / 100.0, 0.0, 1.0) * h)
             y1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * h)
             if y1 > y0:
-                out[y0:y1, :] = src[y0:y1, :]
-        else:
+                out[y0:y1, :] = src_stripe[y0:y1, :]
+
+    def _apply_v(stripes_list):
+        for (pos, size) in stripes_list:
             x0 = int(np.clip(pos / 100.0, 0.0, 1.0) * w)
             x1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * w)
             if x1 > x0:
-                out[:, x0:x1] = src[:, x0:x1]
+                out[:, x0:x1] = src_stripe[:, x0:x1]
+
+    if stripe_orientation == "Orizzontale":
+        _apply_h(stripes)
+    elif stripe_orientation == "Verticale":
+        _apply_v(stripes)
+    elif stripe_orientation == "Mix H+V":
+        # strisce pari = orizzontali, dispari = verticali
+        h_stripes = [s for i, s in enumerate(stripes) if i % 2 == 0]
+        v_stripes = [s for i, s in enumerate(stripes) if i % 2 == 1]
+        _apply_h(h_stripes)
+        _apply_v(v_stripes)
+
     return out
 
 
@@ -128,7 +151,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     seq_mode,
                     slideshow_mode, slide_hold, slide_trans, slide_trans_type,
                     stripe_mode=False, stripes=None, stripe_orientation="Orizzontale",
-                    stripe_bg="Master 1", stripe_glitch=False):
+                    stripe_bg="Master 1", stripe_glitch=False, stripe_reverse=False):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -156,12 +179,16 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     elif format_type == "9:16 (Verticale)":  out_w, out_h = 720, 1280
     else:                                     out_w, out_h = 1080, 1080
 
-    # --- sfondo fisso per stripe mode (già in half_res, stesso size del pool) ---
+    # --- sfondo fisso per stripe mode: stesso shape ESATTO del pool (h, w) ---
     if stripe_mode and stripes:
-        if stripe_bg == "Master 1" and img_m1_half is not None:
-            stripe_bg_img = cv2.resize(img_m1_half, (w, h))
-        elif stripe_bg == "Master 2" and img_m2_half is not None:
-            stripe_bg_img = cv2.resize(img_m2_half, (w, h))
+        if stripe_bg == "Master 1" and up_m1 is not None:
+            up_m1.seek(0)
+            _bg_raw = resize_to_format(np.array(Image.open(up_m1).convert("RGB")), format_type, half_res=True)
+            stripe_bg_img = cv2.resize(_bg_raw, (w, h))
+        elif stripe_bg == "Master 2" and up_m2 is not None:
+            up_m2.seek(0)
+            _bg_raw = resize_to_format(np.array(Image.open(up_m2).convert("RGB")), format_type, half_res=True)
+            stripe_bg_img = cv2.resize(_bg_raw, (w, h))
         else:
             stripe_bg_img = pool_imgs[0].copy()
     else:
@@ -282,7 +309,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             if cycle_pos < slide_hold:
                 if stripe_mode and stripes and stripe_bg_img is not None:
                     out_frame = apply_stripe_window(stripe_bg_img, img_cur, img_cur, h, w,
-                                                    stripes, stripe_orientation, False)
+                                                    stripes, stripe_orientation, False, stripe_reverse)
                 else:
                     out_frame = img_cur
                 return cv2.resize(out_frame, (out_w, out_h))
@@ -302,7 +329,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     glitched = apply_glitch_stripes(base, dest, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes and stripe_bg_img is not None:
                         out_frame = apply_stripe_window(stripe_bg_img, base, glitched, h, w,
-                                                        stripes, stripe_orientation, stripe_glitch)
+                                                        stripes, stripe_orientation, stripe_glitch, stripe_reverse)
                     else:
                         out_frame = glitched
                 else:  # Dissolve Glitchato
@@ -311,7 +338,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     glitched = apply_glitch_stripes(blend, blend, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes and stripe_bg_img is not None:
                         out_frame = apply_stripe_window(stripe_bg_img, blend, glitched, h, w,
-                                                        stripes, stripe_orientation, stripe_glitch)
+                                                        stripes, stripe_orientation, stripe_glitch, stripe_reverse)
                     else:
                         out_frame = glitched
 
@@ -432,7 +459,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     calder_clean = pick()
                     return cv2.resize(
                         apply_stripe_window(stripe_bg_img, calder_clean, calder_clean, h, w,
-                                            stripes, stripe_orientation, False),
+                                            stripes, stripe_orientation, False, stripe_reverse),
                         (out_w, out_h))
                 return cv2.resize(pick(), (out_w, out_h))
 
@@ -477,7 +504,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             # --- Stripe mode: componi sfondo + striscia ---
             if stripe_mode and stripes and stripe_bg_img is not None:
                 frame = apply_stripe_window(stripe_bg_img, calder_clean, frame, h, w,
-                                            stripes, stripe_orientation, stripe_glitch)
+                                            stripes, stripe_orientation, stripe_glitch, stripe_reverse)
 
             return cv2.resize(frame, (out_w, out_h))
 
@@ -588,13 +615,16 @@ with c2:
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False,
         help="Sfondo fisso (Master) + finestre che mostrano il Calderone in movimento.")
 
-    stripes           = []
+    stripes            = []
     stripe_orientation = "Orizzontale"
     stripe_bg          = "Master 1"
     stripe_glitch      = False
+    stripe_reverse     = False
 
     if stripe_mode:
-        stripe_orientation = st.radio("Orientamento strisce", ["Orizzontale", "Verticale"], horizontal=True)
+        stripe_orientation = st.radio("Orientamento strisce",
+            ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True,
+            help="Mix H+V: strisce pari = orizzontali, dispari = verticali")
 
         # scelta sfondo
         bg_opts = []
@@ -604,15 +634,22 @@ with c2:
         stripe_bg = st.radio("🖼️ Sfondo fisso", bg_opts, horizontal=True,
             help="La foto ferma su cui si aprono le strisce")
 
-        # glitch dentro la striscia
-        stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False,
-            help="OFF = la striscia mostra la foto del Calderone pulita. ON = glitchata.")
+        col_tog1, col_tog2 = st.columns(2)
+        with col_tog1:
+            stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False,
+                help="OFF = striscia mostra foto Calderone pulita. ON = glitchata.")
+        with col_tog2:
+            stripe_reverse = st.toggle("🔄 Reverse", value=False,
+                help="Inverte: strisce ferme (Master), tutto il resto Calderone in movimento.")
 
         st.divider()
 
         n_stripes = st.number_input("Numero di strisce", min_value=1, max_value=6, value=1, step=1)
         for i in range(int(n_stripes)):
-            st.caption(f"Striscia {i+1}")
+            orient_label = ""
+            if stripe_orientation == "Mix H+V":
+                orient_label = " [H]" if i % 2 == 0 else " [V]"
+            st.caption(f"Striscia {i+1}{orient_label}")
             col_a, col_b = st.columns(2)
             with col_a:
                 pos  = st.slider(f"Posizione {i+1} (%)", 0, 95, min(20 + i*25, 90), key=f"sp_{i}",
@@ -627,9 +664,9 @@ with c2:
         # --- ANTEPRIMA ---
         prev_choices = []
         prev_files   = {}
-        if up_m1: prev_choices.append("Master 1");           prev_files["Master 1"] = up_m1
-        if up_m2: prev_choices.append("Master 2");           prev_files["Master 2"] = up_m2
-        if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
+        if up_m1: prev_choices.append("Master 1");              prev_files["Master 1"] = up_m1
+        if up_m2: prev_choices.append("Master 2");              prev_files["Master 2"] = up_m2
+        if up_t:  prev_choices.append("Prima foto Calderone");  prev_files["Prima foto Calderone"] = up_t[0]
 
         if prev_choices:
             prev_sel = st.selectbox("🔍 Anteprima su", prev_choices)
@@ -641,20 +678,33 @@ with c2:
             dw, dh     = int(pw * scale), int(ph * scale)
             prev_small = cv2.resize(prev_img, (dw, dh))
             overlay    = prev_small.copy()
-            for (pos, size) in stripes:
-                if stripe_orientation == "Orizzontale":
+
+            def _draw_stripe_h(ov, y0, y1, dh):
+                ov[y0:y1, :] = (ov[y0:y1, :] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
+                if y0 > 1:  ov[max(0,y0-2):y0, :] = [80, 40, 200]
+                if y1 < dh: ov[y1:min(dh,y1+2), :] = [80, 40, 200]
+
+            def _draw_stripe_v(ov, x0, x1, dw):
+                ov[:, x0:x1] = (ov[:, x0:x1] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
+                if x0 > 1:  ov[:, max(0,x0-2):x0] = [80, 40, 200]
+                if x1 < dw: ov[:, x1:min(dw,x1+2)] = [80, 40, 200]
+
+            for idx, (pos, size) in enumerate(stripes):
+                use_h = (stripe_orientation == "Orizzontale") or \
+                        (stripe_orientation == "Mix H+V" and idx % 2 == 0)
+                if use_h:
                     y0 = int(np.clip(pos / 100.0, 0, 1) * dh)
                     y1 = int(np.clip((pos + size) / 100.0, 0, 1) * dh)
-                    overlay[y0:y1, :] = (overlay[y0:y1, :] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
-                    if y0 > 1: overlay[max(0,y0-2):y0, :] = [80, 40, 200]
-                    if y1 < dh: overlay[y1:min(dh,y1+2), :] = [80, 40, 200]
+                    _draw_stripe_h(overlay, y0, y1, dh)
                 else:
                     x0 = int(np.clip(pos / 100.0, 0, 1) * dw)
                     x1 = int(np.clip((pos + size) / 100.0, 0, 1) * dw)
-                    overlay[:, x0:x1] = (overlay[:, x0:x1] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
-                    if x0 > 1: overlay[:, max(0,x0-2):x0] = [80, 40, 200]
-                    if x1 < dw: overlay[:, x1:min(dw,x1+2)] = [80, 40, 200]
-            st.image(overlay, caption="Anteprima — zona viola = striscia attiva", use_container_width=False)
+                    _draw_stripe_v(overlay, x0, x1, dw)
+
+            caption = "Anteprima — zona viola = striscia attiva"
+            if stripe_reverse:
+                caption += " · REVERSE attivo (strisce = Master fermo)"
+            st.image(overlay, caption=caption, use_container_width=False)
         else:
             st.caption("Carica almeno una foto per vedere l'anteprima.")
 
@@ -702,7 +752,7 @@ with c3:
             seq_mode,
             slideshow_mode, slide_hold, slide_trans, slide_trans_type,
             stripe_mode, stripes, stripe_orientation,
-            stripe_bg, stripe_glitch
+            stripe_bg, stripe_glitch, stripe_reverse
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
