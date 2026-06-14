@@ -94,50 +94,80 @@ def apply_glitch_stripes(src, dst, h, w, orientation, strand_val, rand_lines, va
     return (frame * alpha + dst * (1.0 - alpha)).astype(np.uint8)
 
 
+def compute_stripe_coords(center_pct, size_pct, length_pct, offset_pct, dim):
+    """
+    Calcola (pos0, pos1, len0, len1) per una striscia:
+    - center_pct: centro della striscia sull'asse principale (0-100)
+    - size_pct:   spessore della striscia (0-100)
+    - length_pct: lunghezza della striscia sull'asse secondario (0-100)
+    - offset_pct: offset del centro sull'asse secondario (per movimento, 0-100)
+    - dim:        (dim_principale, dim_secondaria)
+    Ritorna (p0, p1, l0, l1) in pixel
+    """
+    dp, ds = dim
+    half_size = size_pct / 2.0
+    p0 = int(np.clip((center_pct - half_size) / 100.0, 0.0, 1.0) * dp)
+    p1 = int(np.clip((center_pct + half_size) / 100.0, 0.0, 1.0) * dp)
+    half_len = length_pct / 2.0
+    l_center = offset_pct / 100.0 * ds
+    l0 = int(np.clip(l_center - half_len / 100.0 * ds, 0, ds))
+    l1 = int(np.clip(l_center + half_len / 100.0 * ds, 0, ds))
+    return p0, p1, l0, l1
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
-                        stripe_reverse=False):
+                        stripe_reverse=False, audio_envelope_val=1.0,
+                        stripe_offsets=None):
     """
-    Compone il frame finale in modalità striscia.
-    stripe_reverse=False: strisce = Calderone, resto = Master (sfondo fermo)
-    stripe_reverse=True:  strisce = Master (fermo), resto = Calderone
-    stripe_orientation può essere "Orizzontale", "Verticale" o "Mix H+V"
+    stripes: lista di dict con keys: center, size, length, length_audio, move_random, move_speed
+    stripe_offsets: lista di float (0-100) per il centro sull'asse secondario (movimento random precomputato)
+    audio_envelope_val: valore RMS corrente (0-1) per modulare la lunghezza
     """
+    if stripe_offsets is None:
+        stripe_offsets = [50.0] * len(stripes)
+
     src_calder = calder_glitch if stripe_glitch else calder_clean
 
     if stripe_reverse:
-        # base = Calderone, le strisce mostrano il Master fermo
         out = src_calder.copy()
         src_stripe = bg_frame
     else:
-        # base = Master fermo, le strisce mostrano il Calderone
         out = bg_frame.copy()
         src_stripe = src_calder
 
-    def _apply_h(stripes_list):
-        for (pos, size) in stripes_list:
-            y0 = int(np.clip(pos / 100.0, 0.0, 1.0) * h)
-            y1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * h)
-            if y1 > y0:
-                out[y0:y1, :] = src_stripe[y0:y1, :]
+    def _paste_h(p0, p1, l0, l1):
+        if p1 > p0 and l1 > l0:
+            out[p0:p1, l0:l1] = src_stripe[p0:p1, l0:l1]
 
-    def _apply_v(stripes_list):
-        for (pos, size) in stripes_list:
-            x0 = int(np.clip(pos / 100.0, 0.0, 1.0) * w)
-            x1 = int(np.clip((pos + size) / 100.0, 0.0, 1.0) * w)
-            if x1 > x0:
-                out[:, x0:x1] = src_stripe[:, x0:x1]
+    def _paste_v(p0, p1, l0, l1):
+        if p1 > p0 and l1 > l0:
+            out[l0:l1, p0:p1] = src_stripe[l0:l1, p0:p1]
 
-    if stripe_orientation == "Orizzontale":
-        _apply_h(stripes)
-    elif stripe_orientation == "Verticale":
-        _apply_v(stripes)
-    elif stripe_orientation == "Mix H+V":
-        # strisce pari = orizzontali, dispari = verticali
-        h_stripes = [s for i, s in enumerate(stripes) if i % 2 == 0]
-        v_stripes = [s for i, s in enumerate(stripes) if i % 2 == 1]
-        _apply_h(h_stripes)
-        _apply_v(v_stripes)
+    def _draw(s, offset, is_h):
+        center  = s['center']
+        size    = s['size']
+        # lunghezza base + modulazione audio
+        base_len = s['length']
+        if s.get('length_audio', False):
+            # pulsa: min 20% della base_len, max 100%
+            base_len = base_len * (0.2 + 0.8 * audio_envelope_val)
+        base_len = np.clip(base_len, 1.0, 100.0)
+        dim = (h, w) if is_h else (w, h)
+        p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, offset, dim)
+        if is_h:
+            _paste_h(p0, p1, l0, l1)
+        else:
+            _paste_v(p0, p1, l0, l1)
+
+    for idx, s in enumerate(stripes):
+        offset = stripe_offsets[idx]
+        if stripe_orientation == "Orizzontale":
+            _draw(s, offset, True)
+        elif stripe_orientation == "Verticale":
+            _draw(s, offset, False)
+        elif stripe_orientation == "Mix H+V":
+            _draw(s, offset, idx % 2 == 0)
 
     return out
 
@@ -179,20 +209,38 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     elif format_type == "9:16 (Verticale)":  out_w, out_h = 720, 1280
     else:                                     out_w, out_h = 1080, 1080
 
-    # --- sfondo fisso per stripe mode: stesso shape ESATTO del pool (h, w) ---
+    # --- sfondo per stripe mode ---
+    stripe_bg_static = None   # Master 1/2 fisso
     if stripe_mode and stripes:
         if stripe_bg == "Master 1" and up_m1 is not None:
             up_m1.seek(0)
             _bg_raw = resize_to_format(np.array(Image.open(up_m1).convert("RGB")), format_type, half_res=True)
-            stripe_bg_img = cv2.resize(_bg_raw, (w, h))
+            stripe_bg_static = cv2.resize(_bg_raw, (w, h))
         elif stripe_bg == "Master 2" and up_m2 is not None:
             up_m2.seek(0)
             _bg_raw = resize_to_format(np.array(Image.open(up_m2).convert("RGB")), format_type, half_res=True)
-            stripe_bg_img = cv2.resize(_bg_raw, (w, h))
-        else:
-            stripe_bg_img = pool_imgs[0].copy()
-    else:
-        stripe_bg_img = None
+            stripe_bg_static = cv2.resize(_bg_raw, (w, h))
+        # "Calderone" → stripe_bg_static rimane None, si usa pick() a runtime
+
+    # --- precomputo traiettorie random per ogni striscia (smooth con sinusoidi) ---
+    stripe_offsets_t = []   # lista di array [total_f] con offset 0-100
+    if stripe_mode and stripes:
+        rng = np.random.default_rng(42)
+        for s in stripes:
+            if s.get('move_random', False):
+                spd = max(0.1, s.get('move_speed', 1.0))
+                # somma di sinusoidi a frequenze diverse per movimento fluido
+                t_arr = np.linspace(0, max_limit, total_f)
+                freq1 = spd * rng.uniform(0.1, 0.3)
+                freq2 = spd * rng.uniform(0.05, 0.15)
+                phase1, phase2 = rng.uniform(0, np.pi*2, 2)
+                traj = (np.sin(2*np.pi*freq1*t_arr + phase1) * 0.5 +
+                        np.sin(2*np.pi*freq2*t_arr + phase2) * 0.5)
+                # scala a 10-90 per non uscire dai bordi
+                traj = (traj + 1) / 2 * 80 + 10
+                stripe_offsets_t.append(traj)
+            else:
+                stripe_offsets_t.append(np.full(total_f, 50.0))
 
     # --- AUDIO ANALYSIS ---
     audio_envelope  = np.ones(total_f)
@@ -306,10 +354,16 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             img_cur  = pool_imgs[idx_cur]
             img_next = pool_imgs[idx_next]
 
+            # sfondo: statico o calderone
+            _bg = stripe_bg_static if stripe_bg_static is not None else img_cur
+            _aenv = float(audio_envelope[f])
+            _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
+
             if cycle_pos < slide_hold:
-                if stripe_mode and stripes and stripe_bg_img is not None:
-                    out_frame = apply_stripe_window(stripe_bg_img, img_cur, img_cur, h, w,
-                                                    stripes, stripe_orientation, False, stripe_reverse)
+                if stripe_mode and stripes:
+                    out_frame = apply_stripe_window(_bg, img_cur, img_cur, h, w,
+                                                    stripes, stripe_orientation, False,
+                                                    stripe_reverse, _aenv, _soff)
                 else:
                     out_frame = img_cur
                 return cv2.resize(out_frame, (out_w, out_h))
@@ -327,18 +381,20 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         base = img_next
                         dest = img_next
                     glitched = apply_glitch_stripes(base, dest, h, w, orientation, strand_val, rand_lines, intensity)
-                    if stripe_mode and stripes and stripe_bg_img is not None:
-                        out_frame = apply_stripe_window(stripe_bg_img, base, glitched, h, w,
-                                                        stripes, stripe_orientation, stripe_glitch, stripe_reverse)
+                    if stripe_mode and stripes:
+                        out_frame = apply_stripe_window(_bg, base, glitched, h, w,
+                                                        stripes, stripe_orientation, stripe_glitch,
+                                                        stripe_reverse, _aenv, _soff)
                     else:
                         out_frame = glitched
-                else:  # Dissolve Glitchato
+                else:
                     intensity = np.sin(trans_prog * np.pi)
                     blend = (img_cur * (1.0 - trans_prog) + img_next * trans_prog).astype(np.uint8)
                     glitched = apply_glitch_stripes(blend, blend, h, w, orientation, strand_val, rand_lines, intensity)
-                    if stripe_mode and stripes and stripe_bg_img is not None:
-                        out_frame = apply_stripe_window(stripe_bg_img, blend, glitched, h, w,
-                                                        stripes, stripe_orientation, stripe_glitch, stripe_reverse)
+                    if stripe_mode and stripes:
+                        out_frame = apply_stripe_window(_bg, blend, glitched, h, w,
+                                                        stripes, stripe_orientation, stripe_glitch,
+                                                        stripe_reverse, _aenv, _soff)
                     else:
                         out_frame = glitched
 
@@ -454,12 +510,17 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     c += sw
                 return res
 
+            _aenv = float(audio_envelope[f])
+            _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
+
             if orientation == "Nessun Effetto":
-                if stripe_mode and stripes and stripe_bg_img is not None:
+                if stripe_mode and stripes:
                     calder_clean = pick()
+                    _bg = stripe_bg_static if stripe_bg_static is not None else calder_clean
                     return cv2.resize(
-                        apply_stripe_window(stripe_bg_img, calder_clean, calder_clean, h, w,
-                                            stripes, stripe_orientation, False, stripe_reverse),
+                        apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
+                                            stripes, stripe_orientation, False, stripe_reverse,
+                                            _aenv, _soff),
                         (out_w, out_h))
                 return cv2.resize(pick(), (out_w, out_h))
 
@@ -502,9 +563,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                             frame[bh[0]:bh[1], bw[0]:bw[1]] = target[bh[0]:bh[1], bw[0]:bw[1]]
 
             # --- Stripe mode: componi sfondo + striscia ---
-            if stripe_mode and stripes and stripe_bg_img is not None:
-                frame = apply_stripe_window(stripe_bg_img, calder_clean, frame, h, w,
-                                            stripes, stripe_orientation, stripe_glitch, stripe_reverse)
+            if stripe_mode and stripes:
+                _bg = stripe_bg_static if stripe_bg_static is not None else calder_clean
+                frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
+                                            stripes, stripe_orientation, stripe_glitch,
+                                            stripe_reverse, _aenv, _soff)
 
             return cv2.resize(frame, (out_w, out_h))
 
@@ -613,7 +676,7 @@ with c2:
 
     # ---- STRISCE SELETTIVE ----
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False,
-        help="Sfondo fisso (Master) + finestre che mostrano il Calderone in movimento.")
+        help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
     stripes            = []
     stripe_orientation = "Orizzontale"
@@ -624,23 +687,23 @@ with c2:
     if stripe_mode:
         stripe_orientation = st.radio("Orientamento strisce",
             ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True,
-            help="Mix H+V: strisce pari = orizzontali, dispari = verticali")
+            help="Mix H+V: strisce pari=orizzontali, dispari=verticali")
 
         # scelta sfondo
         bg_opts = []
         if up_m1: bg_opts.append("Master 1")
         if up_m2: bg_opts.append("Master 2")
-        if not bg_opts: bg_opts = ["Master 1"]
-        stripe_bg = st.radio("🖼️ Sfondo fisso", bg_opts, horizontal=True,
-            help="La foto ferma su cui si aprono le strisce")
+        bg_opts.append("Calderone")
+        stripe_bg = st.radio("🖼️ Sfondo", bg_opts, horizontal=True,
+            help="Master 1/2 = foto ferma. Calderone = foto in movimento.")
 
         col_tog1, col_tog2 = st.columns(2)
         with col_tog1:
             stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False,
-                help="OFF = striscia mostra foto Calderone pulita. ON = glitchata.")
+                help="OFF = striscia pulita. ON = glitchata.")
         with col_tog2:
             stripe_reverse = st.toggle("🔄 Reverse", value=False,
-                help="Inverte: strisce ferme (Master), tutto il resto Calderone in movimento.")
+                help="Inverte: strisce ferme, tutto il resto Calderone.")
 
         st.divider()
 
@@ -650,23 +713,46 @@ with c2:
             if stripe_orientation == "Mix H+V":
                 orient_label = " [H]" if i % 2 == 0 else " [V]"
             st.caption(f"Striscia {i+1}{orient_label}")
-            col_a, col_b = st.columns(2)
-            with col_a:
-                pos  = st.slider(f"Posizione {i+1} (%)", 0, 95, min(20 + i*25, 90), key=f"sp_{i}",
-                    help="Dove inizia (0=cima/sinistra → 100=fondo/destra)")
-            with col_b:
-                size = st.slider(f"Larghezza {i+1} (%)", 1, 50, 10, key=f"ss_{i}",
-                    help="Quanto è larga")
-            stripes.append((pos, size))
+
+            ca, cb, cc = st.columns(3)
+            with ca:
+                center = st.slider(f"Centro {i+1} (%)", 0, 100, min(20 + i*25, 95), key=f"sc_{i}",
+                    help="Centro della striscia (50 = esatto centro dell'immagine)")
+            with cb:
+                size = st.slider(f"Spessore {i+1} (%)", 1, 50, 10, key=f"ss_{i}",
+                    help="Quanto è spessa la striscia")
+            with cc:
+                length = st.slider(f"Lunghezza {i+1} (%)", 5, 100, 100, key=f"sl_{i}",
+                    help="Quanto si estende in larghezza/altezza (100=bordo a bordo)")
+
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                length_audio = st.toggle(f"🎵 Lunghezza reattiva {i+1}", value=False, key=f"la_{i}",
+                    help="La lunghezza pulsa col volume audio")
+            with col_m2:
+                move_random = st.toggle(f"🎲 Movimento random {i+1}", value=False, key=f"mr_{i}",
+                    help="La striscia si sposta fluidamente su/giù (o sx/dx)")
+            move_speed = 1.0
+            if move_random:
+                move_speed = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
+
+            stripes.append({
+                'center':       center,
+                'size':         size,
+                'length':       float(length),
+                'length_audio': length_audio,
+                'move_random':  move_random,
+                'move_speed':   move_speed,
+            })
 
         st.divider()
 
         # --- ANTEPRIMA ---
         prev_choices = []
         prev_files   = {}
-        if up_m1: prev_choices.append("Master 1");              prev_files["Master 1"] = up_m1
-        if up_m2: prev_choices.append("Master 2");              prev_files["Master 2"] = up_m2
-        if up_t:  prev_choices.append("Prima foto Calderone");  prev_files["Prima foto Calderone"] = up_t[0]
+        if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
+        if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
+        if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
 
         if prev_choices:
             prev_sel = st.selectbox("🔍 Anteprima su", prev_choices)
@@ -679,31 +765,36 @@ with c2:
             prev_small = cv2.resize(prev_img, (dw, dh))
             overlay    = prev_small.copy()
 
-            def _draw_stripe_h(ov, y0, y1, dh):
-                ov[y0:y1, :] = (ov[y0:y1, :] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
-                if y0 > 1:  ov[max(0,y0-2):y0, :] = [80, 40, 200]
-                if y1 < dh: ov[y1:min(dh,y1+2), :] = [80, 40, 200]
+            def _draw_stripe_h(ov, p0, p1, l0, l1):
+                p0,p1 = max(0,p0), min(dh,p1)
+                l0,l1 = max(0,l0), min(dw,l1)
+                if p1>p0 and l1>l0:
+                    ov[p0:p1, l0:l1] = (ov[p0:p1, l0:l1]*0.35 + np.array([120,80,220])*0.65).astype(np.uint8)
+                if p0>1: ov[max(0,p0-2):p0, l0:l1] = [80,40,200]
+                if p1<dh: ov[p1:min(dh,p1+2), l0:l1] = [80,40,200]
 
-            def _draw_stripe_v(ov, x0, x1, dw):
-                ov[:, x0:x1] = (ov[:, x0:x1] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
-                if x0 > 1:  ov[:, max(0,x0-2):x0] = [80, 40, 200]
-                if x1 < dw: ov[:, x1:min(dw,x1+2)] = [80, 40, 200]
+            def _draw_stripe_v(ov, p0, p1, l0, l1):
+                p0,p1 = max(0,p0), min(dw,p1)
+                l0,l1 = max(0,l0), min(dh,l1)
+                if p1>p0 and l1>l0:
+                    ov[l0:l1, p0:p1] = (ov[l0:l1, p0:p1]*0.35 + np.array([120,80,220])*0.65).astype(np.uint8)
+                if p0>1: ov[l0:l1, max(0,p0-2):p0] = [80,40,200]
+                if p1<dw: ov[l0:l1, p1:min(dw,p1+2)] = [80,40,200]
 
-            for idx, (pos, size) in enumerate(stripes):
+            for idx, s in enumerate(stripes):
                 use_h = (stripe_orientation == "Orizzontale") or \
                         (stripe_orientation == "Mix H+V" and idx % 2 == 0)
+                # anteprima: offset fisso a 50 (centro), lunghezza come impostata
                 if use_h:
-                    y0 = int(np.clip(pos / 100.0, 0, 1) * dh)
-                    y1 = int(np.clip((pos + size) / 100.0, 0, 1) * dh)
-                    _draw_stripe_h(overlay, y0, y1, dh)
+                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], 50.0, (dh, dw))
+                    _draw_stripe_h(overlay, p0, p1, l0, l1)
                 else:
-                    x0 = int(np.clip(pos / 100.0, 0, 1) * dw)
-                    x1 = int(np.clip((pos + size) / 100.0, 0, 1) * dw)
-                    _draw_stripe_v(overlay, x0, x1, dw)
+                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], 50.0, (dw, dh))
+                    _draw_stripe_v(overlay, p0, p1, l0, l1)
 
-            caption = "Anteprima — zona viola = striscia attiva"
+            caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
             if stripe_reverse:
-                caption += " · REVERSE attivo (strisce = Master fermo)"
+                caption += " · REVERSE ON"
             st.image(overlay, caption=caption, use_container_width=False)
         else:
             st.caption("Carica almeno una foto per vedere l'anteprima.")
