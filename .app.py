@@ -147,14 +147,16 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
     def _draw(s, offset, is_h):
         center  = s['center']
         size    = s['size']
-        # lunghezza base + modulazione audio
         base_len = s['length']
         if s.get('length_audio', False):
-            # pulsa: min 20% della base_len, max 100%
             base_len = base_len * (0.2 + 0.8 * audio_envelope_val)
         base_len = np.clip(base_len, 1.0, 100.0)
+        # offset dx/sx dall'utente, sovrascrive il movimento random se presente
+        length_offset = s.get('offset_length', 50.0)
+        if s.get('move_random', False):
+            length_offset = offset  # offset random precomputato
         dim = (h, w) if is_h else (w, h)
-        p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, offset, dim)
+        p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
             _paste_h(p0, p1, l0, l1)
         else:
@@ -736,18 +738,19 @@ with c2:
             if move_random:
                 move_speed = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
 
-            # slider offset su/giù (sposta il centro sull'asse principale)
-            offset_center = st.slider(
-                f"↕ Offset su/giù {i+1} (%)", -50, 50, 0, key=f"oc_{i}",
-                help="Sposta la striscia su (negativo) o giù (positivo) rispetto al Centro")
+            # slider offset dx/sx (sposta la striscia sull'asse secondario)
+            offset_length = st.slider(
+                f"↔ Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}",
+                help="Sposta la striscia a sinistra (0) o destra (100). Default 50 = centrata.")
 
             stripes.append({
-                'center':        center + offset_center,
+                'center':        center,
                 'size':          size,
                 'length':        float(length),
                 'length_audio':  length_audio,
                 'move_random':   move_random,
                 'move_speed':    move_speed,
+                'offset_length': float(offset_length),
             })
 
         st.divider()
@@ -789,12 +792,12 @@ with c2:
             for idx, s in enumerate(stripes):
                 use_h = (stripe_orientation == "Orizzontale") or \
                         (stripe_orientation == "Mix H+V" and idx % 2 == 0)
-                # anteprima: offset fisso a 50 (centro), lunghezza come impostata
+                off = s.get('offset_length', 50.0)
                 if use_h:
-                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], 50.0, (dh, dw))
+                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dh, dw))
                     _draw_stripe_h(overlay, p0, p1, l0, l1)
                 else:
-                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], 50.0, (dw, dh))
+                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dw, dh))
                     _draw_stripe_v(overlay, p0, p1, l0, l1)
 
             caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
