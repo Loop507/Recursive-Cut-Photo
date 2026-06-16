@@ -240,8 +240,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     else:                                     out_w, out_h = 1080, 1080
 
     # --- sfondo per stripe mode ---
-    stripe_bg_static = None   # Master 1/2 fisso
-    if stripe_mode and stripes:
+    stripe_bg_static  = None   # Master 1/2 fisso
+    stripe_use_render = (stripe_bg == "Render")  # usa frame glitchato come sfondo
+
+    if stripe_mode and stripes and not stripe_use_render:
         if stripe_bg == "Master 1" and up_m1 is not None:
             up_m1.seek(0)
             _bg_raw = resize_to_format(np.array(Image.open(up_m1).convert("RGB")), format_type, half_res=True)
@@ -384,16 +386,18 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             img_cur  = pool_imgs[idx_cur]
             img_next = pool_imgs[idx_next]
 
-            # sfondo: statico o calderone (usa img_next per differenziare da img_cur nella striscia)
-            _bg = stripe_bg_static if stripe_bg_static is not None else img_next
             _aenv = float(audio_envelope[f])
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
-
             _bval = float(beat_envelope[f])
+
+            def _get_bg_slide(glitched_frame=None):
+                if stripe_use_render and glitched_frame is not None:
+                    return glitched_frame
+                return stripe_bg_static if stripe_bg_static is not None else img_next
 
             if cycle_pos < slide_hold:
                 if stripe_mode and stripes:
-                    out_frame = apply_stripe_window(_bg, img_cur, img_cur, h, w,
+                    out_frame = apply_stripe_window(_get_bg_slide(img_cur), img_cur, img_cur, h, w,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
                                                     stripe_chroma, stripe_flash, _bval)
@@ -415,7 +419,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         dest = img_next
                     glitched = apply_glitch_stripes(base, dest, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes:
-                        out_frame = apply_stripe_window(_bg, base, glitched, h, w,
+                        out_frame = apply_stripe_window(_get_bg_slide(glitched), base, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval)
@@ -426,7 +430,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     blend = (img_cur * (1.0 - trans_prog) + img_next * trans_prog).astype(np.uint8)
                     glitched = apply_glitch_stripes(blend, blend, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes:
-                        out_frame = apply_stripe_window(_bg, blend, glitched, h, w,
+                        out_frame = apply_stripe_window(_get_bg_slide(glitched), blend, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval)
@@ -552,7 +556,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             if orientation == "Nessun Effetto":
                 if stripe_mode and stripes:
                     calder_clean = pick()
-                    _bg = stripe_bg_static if stripe_bg_static is not None else pick()
+                    if stripe_use_render:
+                        # nessun glitch → frame pulito come sfondo
+                        _bg = calder_clean
+                    else:
+                        _bg = stripe_bg_static if stripe_bg_static is not None else pick()
                     return cv2.resize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
@@ -600,7 +608,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
             # --- Stripe mode: componi sfondo + striscia ---
             if stripe_mode and stripes:
-                _bg = stripe_bg_static if stripe_bg_static is not None else pick()
+                if stripe_use_render:
+                    # frame glitchato = sfondo, striscia Calderone sopra
+                    _bg = frame.copy()
+                else:
+                    _bg = stripe_bg_static if stripe_bg_static is not None else pick()
                 frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
@@ -735,8 +747,9 @@ with c2:
         if up_m1: bg_opts.append("Master 1")
         if up_m2: bg_opts.append("Master 2")
         bg_opts.append("Calderone")
+        bg_opts.append("Render")
         stripe_bg = st.radio("🖼️ Sfondo", bg_opts, horizontal=True,
-            help="Master 1/2 = foto ferma. Calderone = foto in movimento.")
+            help="Master 1/2 = foto ferma. Calderone = foto in movimento. Render = glitch principale come sfondo, strisce sopra.")
 
         col_tog1, col_tog2 = st.columns(2)
         with col_tog1:
