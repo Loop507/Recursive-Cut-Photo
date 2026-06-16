@@ -653,9 +653,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     stripe_info = ""
     if stripe_mode and stripes:
+        bg_label = "Frame" if stripe_bg == "Calderone" else stripe_bg
         stripe_info = f"""
 * STRISCE SELETTIVE: {len(stripes)} striscia/e ({stripe_orientation})
-* Sfondo: {stripe_bg} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
+* Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
 
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 :: MOTORE: recursive_cut_pro [v9.3]
@@ -773,7 +774,7 @@ with c2:
                 center = st.slider(f"Centro {i+1} (%)", 0, 100, min(20 + i*25, 95), key=f"sc_{i}",
                     help="Centro della striscia (50 = esatto centro dell'immagine)")
             with cb:
-                size = st.slider(f"Spessore {i+1} (%)", 1, 50, 10, key=f"ss_{i}",
+                size = st.slider(f"Spessore {i+1} (%)", 1, 100, 10, key=f"ss_{i}",
                     help="Quanto è spessa la striscia")
             with cc:
                 length = st.slider(f"Lunghezza {i+1} (%)", 5, 100, 100, key=f"sl_{i}",
@@ -1005,4 +1006,4 @@ with c3:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
             st.download_button("📄 SCARICA REPORT", r_txt,
-                file_name=f"{base}_report.txt")
+                file_name=f"{base}_report.txt")        
