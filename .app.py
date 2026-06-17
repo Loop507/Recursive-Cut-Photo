@@ -127,6 +127,29 @@ def apply_chroma(patch, amount=6):
     return out
 
 
+def blend_patch(base, top, mode, opacity):
+    """
+    Combina 'top' su 'base' secondo il blend mode, poi miscela con opacity (0-1).
+    base, top: uint8 arrays stessa shape
+    """
+    b = base.astype(np.float32)
+    t = top.astype(np.float32)
+
+    if mode == "Normal":
+        blended = t
+    elif mode == "Screen":
+        blended = 255.0 - (255.0 - b) * (255.0 - t) / 255.0
+    elif mode == "Multiply":
+        blended = (b * t) / 255.0
+    elif mode == "Difference":
+        blended = np.abs(b - t)
+    else:
+        blended = t
+
+    result = b * (1.0 - opacity) + blended * opacity
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
                         stripe_reverse=False, audio_envelope_val=1.0,
@@ -135,7 +158,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         beat_val=0.0):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
-             move_random, move_speed, offset_length, chroma_amount
+             move_random, move_speed, offset_length, chroma_amount,
+             blend_mode, opacity
     stripe_chroma:  aberrazione cromatica dentro la striscia
     stripe_flash:   striscia si spegne (mostra bg) sui beat forti
     beat_val:       valore beat envelope corrente (0-1)
@@ -155,19 +179,21 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         out = bg_frame.copy()
         src_stripe = src_calder
 
-    def _paste_h(p0, p1, l0, l1, chroma_amt):
+    def _paste_h(p0, p1, l0, l1, chroma_amt, mode, opacity):
         if p1 > p0 and l1 > l0:
             patch = src_stripe[p0:p1, l0:l1].copy()
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
-            out[p0:p1, l0:l1] = patch
+            base_patch = out[p0:p1, l0:l1]
+            out[p0:p1, l0:l1] = blend_patch(base_patch, patch, mode, opacity)
 
-    def _paste_v(p0, p1, l0, l1, chroma_amt):
+    def _paste_v(p0, p1, l0, l1, chroma_amt, mode, opacity):
         if p1 > p0 and l1 > l0:
             patch = src_stripe[l0:l1, p0:p1].copy()
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
-            out[l0:l1, p0:p1] = patch
+            base_patch = out[l0:l1, p0:p1]
+            out[l0:l1, p0:p1] = blend_patch(base_patch, patch, mode, opacity)
 
     def _draw(s, offset, is_h):
         if flash_active:
@@ -182,12 +208,14 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         if s.get('move_random', False):
             length_offset = offset
         chroma_amt = int(s.get('chroma_amount', 6))
+        blend_mode = s.get('blend_mode', 'Normal')
+        opacity    = float(s.get('opacity', 1.0))
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
-            _paste_h(p0, p1, l0, l1, chroma_amt)
+            _paste_h(p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
         else:
-            _paste_v(p0, p1, l0, l1, chroma_amt)
+            _paste_v(p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
 
     for idx, s in enumerate(stripes):
         offset = stripe_offsets[idx]
@@ -807,6 +835,14 @@ with c2:
                 f"↔ Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}",
                 help="Sposta la striscia a sinistra (0) o destra (100). Default 50 = centrata.")
 
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                blend_mode = st.selectbox(f"🎨 Blend mode {i+1}",
+                    ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}",
+                    help="Come questa striscia si combina con quello che c'è sotto (utile sovrapponendo strisce)")
+            with col_b2:
+                opacity = st.slider(f"Opacità {i+1} (%)", 0, 100, 100, key=f"op_{i}") / 100.0
+
             stripes.append({
                 'center':        center,
                 'size':          size,
@@ -817,6 +853,8 @@ with c2:
                 'offset_length': float(offset_length),
                 'chroma_amount': chroma_amount,
                 'flash':         flash_on,
+                'blend_mode':    blend_mode,
+                'opacity':       opacity,
             })
 
         st.divider()
@@ -1006,4 +1044,4 @@ with c3:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
             st.download_button("📄 SCARICA REPORT", r_txt,
-                file_name=f"{base}_report.txt")        
+                file_name=f"{base}_report.txt")
