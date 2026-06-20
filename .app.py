@@ -219,12 +219,12 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
 
     for idx, s in enumerate(stripes):
         offset = stripe_offsets[idx]
-        if stripe_orientation == "Orizzontale":
+        # orientamento individuale se presente nel dict (Mix H+V con radio per striscia)
+        s_orient = s.get('orientation', stripe_orientation)
+        if s_orient == "Orizzontale":
             _draw(s, offset, True)
-        elif stripe_orientation == "Verticale":
+        else:
             _draw(s, offset, False)
-        elif stripe_orientation == "Mix H+V":
-            _draw(s, offset, idx % 2 == 0)
 
     return out
 
@@ -239,7 +239,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     slideshow_mode, slide_hold, slide_trans, slide_trans_type,
                     stripe_mode=False, stripes=None, stripe_orientation="Orizzontale",
                     stripe_bg="Master 1", stripe_glitch=False, stripe_reverse=False,
-                    stripe_chroma=False, stripe_flash=False):
+                    stripe_chroma=False, stripe_flash=False,
+                    global_chroma=False, global_chroma_amt=6,
+                    global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -637,7 +639,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             # --- Stripe mode: componi sfondo + striscia ---
             if stripe_mode and stripes:
                 if stripe_use_render:
-                    # frame glitchato = sfondo, striscia Calderone sopra
                     _bg = frame.copy()
                 else:
                     _bg = stripe_bg_static if stripe_bg_static is not None else pick()
@@ -646,8 +647,15 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval)
 
+            # --- Effetti globali standalone (senza strisce selettive) ---
+            if not stripe_mode:
+                if global_chroma:
+                    frame = apply_chroma(frame, global_chroma_amt)
+                if global_flash and _bval > global_flash_threshold:
+                    alpha = global_flash_intensity / 100.0
+                    frame = (calder_clean * (1.0 - alpha) + frame * (1.0 - alpha)).astype(np.uint8)
+
             result = cv2.resize(frame, (out_w, out_h))
-            # salva primo frame per export
             if f == 0 and 'preview_frame' not in st.session_state:
                 st.session_state.preview_frame = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
             return result
@@ -792,10 +800,16 @@ with c2:
 
         n_stripes = st.number_input("Numero di strisce", min_value=1, max_value=6, value=1, step=1)
         for i in range(int(n_stripes)):
-            orient_label = ""
+            st.caption(f"Striscia {i+1}")
+
+            # orientamento individuale solo in Mix H+V, altrimenti segue quello globale
             if stripe_orientation == "Mix H+V":
-                orient_label = " [H]" if i % 2 == 0 else " [V]"
-            st.caption(f"Striscia {i+1}{orient_label}")
+                stripe_orient_i = st.radio(
+                    f"Orientamento striscia {i+1}", ["Orizzontale", "Verticale"],
+                    horizontal=True, key=f"so_{i}",
+                    help="In Mix H+V puoi scegliere liberamente per ogni striscia")
+            else:
+                stripe_orient_i = stripe_orientation
 
             ca, cb, cc = st.columns(3)
             with ca:
@@ -830,7 +844,6 @@ with c2:
             if chroma_on:
                 chroma_amount = st.slider(f"Intensità chroma {i+1}", 1, 30, 6, key=f"ca_{i}")
 
-            # slider offset dx/sx (sposta la striscia sull'asse secondario)
             offset_length = st.slider(
                 f"↔ Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}",
                 help="Sposta la striscia a sinistra (0) o destra (100). Default 50 = centrata.")
@@ -839,7 +852,7 @@ with c2:
             with col_b1:
                 blend_mode = st.selectbox(f"🎨 Blend mode {i+1}",
                     ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}",
-                    help="Come questa striscia si combina con quello che c'è sotto (utile sovrapponendo strisce)")
+                    help="Come questa striscia si combina con quello che c'è sotto")
             with col_b2:
                 opacity = st.slider(f"Opacità {i+1} (%)", 0, 100, 100, key=f"op_{i}") / 100.0
 
@@ -853,6 +866,7 @@ with c2:
                 'offset_length': float(offset_length),
                 'chroma_amount': chroma_amount,
                 'flash':         flash_on,
+                'orientation':   stripe_orient_i,
                 'blend_mode':    blend_mode,
                 'opacity':       opacity,
             })
@@ -894,8 +908,7 @@ with c2:
                 if p1<dw: ov[l0:l1, p1:min(dw,p1+2)] = [80,40,200]
 
             for idx, s in enumerate(stripes):
-                use_h = (stripe_orientation == "Orizzontale") or \
-                        (stripe_orientation == "Mix H+V" and idx % 2 == 0)
+                use_h = s.get('orientation', stripe_orientation) == "Orizzontale"
                 off = s.get('offset_length', 50.0)
                 if use_h:
                     p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dh, dw))
@@ -958,6 +971,33 @@ with c2:
         stripe_flash  = False
 
     st.divider()
+
+    # --- EFFETTI GLOBALI — disponibili sempre, anche senza strisce selettive ---
+    st.caption("✨ Effetti globali sul render")
+    col_gfx1, col_gfx2 = st.columns(2)
+    with col_gfx1:
+        global_chroma = st.toggle("🌈 Chroma aberration", value=False, key="global_chroma",
+            help="Aberrazione cromatica su tutto il frame (o su tutte le strisce se attive)")
+        global_chroma_amt = 6
+        if global_chroma:
+            global_chroma_amt = st.slider("Intensità chroma (px)", 1, 30, 6, key="global_chroma_amt",
+                help="Quanti pixel sfasa i canali R e B")
+        if stripe_mode and global_chroma:
+            stripe_chroma = True
+    with col_gfx2:
+        global_flash = st.toggle("⚡ Flash beat", value=False, key="global_flash",
+            help="Il frame lampeggia sui beat forti (richiede audio).")
+        global_flash_threshold = 0.7
+        global_flash_intensity = 100
+        if global_flash:
+            global_flash_threshold = st.slider("Soglia beat (%)", 0, 100, 70, key="global_flash_thr",
+                help="Quanto deve essere forte il beat per far scattare il flash. 0=sempre, 100=solo sui picchi massimi.") / 100.0
+            global_flash_intensity = st.slider("Intensità flash (%)", 0, 100, 100, key="global_flash_int",
+                help="100=frame bianco/pulito totale, valori bassi=flash parziale miscelato")
+        if stripe_mode and global_flash:
+            stripe_flash = True
+
+    st.divider()
     seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
         help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
 
@@ -1002,7 +1042,9 @@ with c3:
             slideshow_mode, slide_hold, slide_trans, slide_trans_type,
             stripe_mode, stripes, stripe_orientation,
             stripe_bg, stripe_glitch, stripe_reverse,
-            stripe_chroma, stripe_flash
+            stripe_chroma, stripe_flash,
+            global_chroma, global_chroma_amt,
+            global_flash, global_flash_threshold, global_flash_intensity
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
