@@ -360,7 +360,21 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                          int(s.get('size', 8)),
                          chroma_on, chroma_amt, mode, opacity)
 
-        else:
+        elif s_orient == "Striscia Ruotata":
+            angle = s.get('angle', 0.0)
+            if s.get('auto_rotate', False):
+                angle = offset
+            length_pct = s.get('length', 100.0)
+            if s.get('length_audio', False):
+                length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
+            draw_striscia_ruotata(out, src_stripe, h, w,
+                                  s.get('cx', 50.0), s.get('cy', 50.0),
+                                  angle,
+                                  float(s.get('size', 15.0)),
+                                  length_pct,
+                                  chroma_on, chroma_amt, mode, opacity)
+
+        elif s_orient in ("Orizzontale", "Verticale"):
             _draw(s, offset, s_orient == "Orizzontale")
 
     return out
