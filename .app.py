@@ -150,6 +150,68 @@ def blend_patch(base, top, mode, opacity):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
+def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
+                  length_pct, thickness_px, chroma_on, chroma_amt, mode, opacity):
+    """Disegna una striscia ruotata (lancetta) usando una maschera OpenCV."""
+    cx = int(cx_pct / 100.0 * w)
+    cy = int(cy_pct / 100.0 * h)
+    length = int(length_pct / 100.0 * max(h, w))
+    half_t = max(1, thickness_px // 2)
+
+    angle_rad = np.deg2rad(angle_deg)
+    ex = int(cx + np.cos(angle_rad) * length)
+    ey = int(cy - np.sin(angle_rad) * length)  # y invertita (0 = cima)
+
+    # Maschera della lancetta come rettangolo ruotato
+    mask = np.zeros((h, w), dtype=np.uint8)
+    dx = ex - cx
+    dy = ey - cy
+    norm = max(np.sqrt(dx*dx + dy*dy), 1e-6)
+    px = int(-dy / norm * half_t)
+    py = int( dx / norm * half_t)
+
+    pts = np.array([
+        [cx + px, cy + py],
+        [cx - px, cy - py],
+        [ex - px, ey - py],
+        [ex + px, ey + py],
+    ], dtype=np.int32)
+    cv2.fillPoly(mask, [pts], 255)
+
+    patch = src_stripe.copy()
+    if chroma_on and chroma_amt > 0:
+        patch = apply_chroma(patch, chroma_amt)
+
+    blended = blend_patch(out, patch, mode, opacity)
+    mask3 = mask[:, :, np.newaxis] / 255.0
+    out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
+
+
+def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
+                 filled, thickness_px, chroma_on, chroma_amt, mode, opacity):
+    """Disegna un cerchio (pieno o bordo) come maschera."""
+    cx = int(cx_pct / 100.0 * w)
+    cy = int(cy_pct / 100.0 * h)
+    radius = int(radius_pct / 100.0 * max(h, w) / 2.0)
+    radius = max(1, radius)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if filled:
+        cv2.circle(mask, (cx, cy), radius, 255, -1)
+    else:
+        t = max(1, thickness_px)
+        cv2.circle(mask, (cx, cy), radius, 255, t)
+
+    patch = src_stripe.copy()
+    if chroma_on and chroma_amt > 0:
+        patch = apply_chroma(patch, chroma_amt)
+
+    blended = blend_patch(out, patch, mode, opacity)
+    mask3 = mask[:, :, np.newaxis] / 255.0
+    out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
+
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
                         stripe_reverse=False, audio_envelope_val=1.0,
@@ -218,13 +280,43 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             _paste_v(p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
 
     for idx, s in enumerate(stripes):
+        if flash_active:
+            continue
         offset = stripe_offsets[idx]
-        # orientamento individuale se presente nel dict (Mix H+V con radio per striscia)
         s_orient = s.get('orientation', stripe_orientation)
-        if s_orient == "Orizzontale":
-            _draw(s, offset, True)
+        chroma_amt = int(s.get('chroma_amount', 6))
+        mode    = s.get('blend_mode', 'Normal')
+        opacity = float(s.get('opacity', 1.0))
+        chroma_on = stripe_chroma and chroma_amt > 0
+
+        if s_orient == "Lancetta":
+            # angolo base + rotazione automatica nel tempo (offset usato come angolo corrente)
+            angle = s.get('angle', 90.0)
+            if s.get('auto_rotate', False):
+                angle = offset  # offset precomputato come angolo corrente
+            length_pct = s.get('length', 50.0)
+            if s.get('length_audio', False):
+                length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
+            draw_lancetta(out, src_stripe, h, w,
+                          s.get('cx', 50.0), s.get('cy', 50.0),
+                          angle, length_pct,
+                          int(s.get('size', 10)),
+                          chroma_on, chroma_amt, mode, opacity)
+
+        elif s_orient == "Cerchio":
+            radius = s.get('radius', 30.0)
+            if s.get('length_audio', False):
+                radius = radius * (0.2 + 0.8 * audio_envelope_val)
+            if s.get('auto_expand', False):
+                radius = offset  # offset precomputato come raggio crescente
+            draw_cerchio(out, src_stripe, h, w,
+                         s.get('cx', 50.0), s.get('cy', 50.0),
+                         radius, s.get('filled', True),
+                         int(s.get('size', 8)),
+                         chroma_on, chroma_amt, mode, opacity)
+
         else:
-            _draw(s, offset, False)
+            _draw(s, offset, s_orient == "Orizzontale")
 
     return out
 
@@ -284,21 +376,34 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             stripe_bg_static = cv2.resize(_bg_raw, (w, h))
         # "Calderone" → stripe_bg_static rimane None, si usa pick() a runtime
 
-    # --- precomputo traiettorie random per ogni striscia (smooth con sinusoidi) ---
-    stripe_offsets_t = []   # lista di array [total_f] con offset 0-100
+    # --- precomputo traiettorie per ogni striscia ---
+    stripe_offsets_t = []
     if stripe_mode and stripes:
         rng = np.random.default_rng(42)
+        t_arr = np.linspace(0, max_limit, total_f)
         for s in stripes:
-            if s.get('move_random', False):
+            s_orient = s.get('orientation', stripe_orientation)
+
+            if s_orient == "Lancetta" and s.get('auto_rotate', False):
+                # rotazione continua: angolo cresce linearmente nel tempo
+                spd = s.get('rotate_speed', 30.0)  # gradi/secondo
+                start_angle = s.get('angle', 90.0)
+                traj = (start_angle + spd * t_arr) % 360.0
+                stripe_offsets_t.append(traj)
+
+            elif s_orient == "Cerchio" and s.get('auto_expand', False):
+                # espansione ciclica: raggio cresce da 0 a 100 e riparte
+                spd = s.get('expand_speed', 20.0)  # % al secondo
+                traj = (spd * t_arr) % 100.0
+                stripe_offsets_t.append(traj)
+
+            elif s.get('move_random', False):
                 spd = max(0.1, s.get('move_speed', 1.0))
-                # somma di sinusoidi a frequenze diverse per movimento fluido
-                t_arr = np.linspace(0, max_limit, total_f)
                 freq1 = spd * rng.uniform(0.1, 0.3)
                 freq2 = spd * rng.uniform(0.05, 0.15)
                 phase1, phase2 = rng.uniform(0, np.pi*2, 2)
                 traj = (np.sin(2*np.pi*freq1*t_arr + phase1) * 0.5 +
                         np.sin(2*np.pi*freq2*t_arr + phase2) * 0.5)
-                # scala a 10-90 per non uscire dai bordi
                 traj = (traj + 1) / 2 * 80 + 10
                 stripe_offsets_t.append(traj)
             else:
@@ -802,74 +907,112 @@ with c2:
         for i in range(int(n_stripes)):
             st.caption(f"Striscia {i+1}")
 
-            # orientamento individuale solo in Mix H+V, altrimenti segue quello globale
+            # orientamento individuale sempre disponibile
+            orient_opts = ["Orizzontale", "Verticale", "Lancetta", "Cerchio"]
             if stripe_orientation == "Mix H+V":
-                stripe_orient_i = st.radio(
-                    f"Orientamento striscia {i+1}", ["Orizzontale", "Verticale"],
-                    horizontal=True, key=f"so_{i}",
-                    help="In Mix H+V puoi scegliere liberamente per ogni striscia")
+                orient_default = 0
+            elif stripe_orientation in orient_opts:
+                orient_default = orient_opts.index(stripe_orientation)
             else:
-                stripe_orient_i = stripe_orientation
+                orient_default = 0
+            stripe_orient_i = st.radio(
+                f"Forma striscia {i+1}", orient_opts,
+                index=orient_default, horizontal=True, key=f"so_{i}")
 
-            ca, cb, cc = st.columns(3)
-            with ca:
-                center = st.slider(f"Centro {i+1} (%)", 0, 100, min(20 + i*25, 95), key=f"sc_{i}",
-                    help="Centro della striscia (50 = esatto centro dell'immagine)")
-            with cb:
-                size = st.slider(f"Spessore {i+1} (%)", 1, 100, 10, key=f"ss_{i}",
-                    help="Quanto è spessa la striscia")
-            with cc:
-                length = st.slider(f"Lunghezza {i+1} (%)", 5, 100, 100, key=f"sl_{i}",
-                    help="Quanto si estende in larghezza/altezza (100=bordo a bordo)")
+            # --- controlli specifici per tipo ---
+            s_dict = {
+                'orientation':   stripe_orient_i,
+                'chroma_amount': 6,
+                'flash':         False,
+                'blend_mode':    'Normal',
+                'opacity':       1.0,
+            }
 
-            col_m1, col_m2 = st.columns(2)
-            with col_m1:
-                length_audio = st.toggle(f"🎵 Lunghezza reattiva {i+1}", value=False, key=f"la_{i}",
-                    help="La lunghezza pulsa col volume audio")
-            with col_m2:
-                move_random = st.toggle(f"🎲 Movimento random {i+1}", value=False, key=f"mr_{i}",
-                    help="La striscia si sposta fluidamente su/giù (o sx/dx)")
-            move_speed = 1.0
-            if move_random:
-                move_speed = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
+            if stripe_orient_i in ["Orizzontale", "Verticale"]:
+                ca, cb, cc = st.columns(3)
+                with ca:
+                    s_dict['center'] = st.slider(f"Centro {i+1} (%)", 0, 100, min(20+i*25,95), key=f"sc_{i}")
+                with cb:
+                    s_dict['size'] = st.slider(f"Spessore {i+1} (%)", 1, 100, 10, key=f"ss_{i}")
+                with cc:
+                    s_dict['length'] = float(st.slider(f"Lunghezza {i+1} (%)", 5, 100, 100, key=f"sl_{i}"))
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    s_dict['length_audio'] = st.toggle(f"Lunghezza reattiva {i+1}", value=False, key=f"la_{i}")
+                with col_m2:
+                    s_dict['move_random'] = st.toggle(f"Movimento random {i+1}", value=False, key=f"mr_{i}")
+                s_dict['move_speed'] = 1.0
+                if s_dict['move_random']:
+                    s_dict['move_speed'] = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
+                s_dict['offset_length'] = float(st.slider(f"Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}"))
 
+            elif stripe_orient_i == "Lancetta":
+                col_cx, col_cy = st.columns(2)
+                with col_cx:
+                    s_dict['cx'] = float(st.slider(f"Centro X {i+1} (%)", 0, 100, 50, key=f"lcx_{i}",
+                        help="Punto di pivot orizzontale"))
+                with col_cy:
+                    s_dict['cy'] = float(st.slider(f"Centro Y {i+1} (%)", 0, 100, 50, key=f"lcy_{i}",
+                        help="Punto di pivot verticale"))
+                col_a, col_l, col_t = st.columns(3)
+                with col_a:
+                    s_dict['angle'] = float(st.slider(f"Angolo {i+1} (°)", 0, 360, 90, key=f"lang_{i}",
+                        help="0=destra, 90=su, 180=sinistra, 270=giù"))
+                with col_l:
+                    s_dict['length'] = float(st.slider(f"Lunghezza {i+1} (%)", 5, 100, 50, key=f"ll_{i}"))
+                with col_t:
+                    s_dict['size'] = st.slider(f"Spessore {i+1} (px)", 2, 100, 15, key=f"lt_{i}")
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    s_dict['auto_rotate'] = st.toggle(f"Rotazione automatica {i+1}", value=False, key=f"lar_{i}")
+                with col_r2:
+                    s_dict['length_audio'] = st.toggle(f"Lunghezza reattiva {i+1}", value=False, key=f"la_{i}")
+                s_dict['rotate_speed'] = 30.0
+                if s_dict['auto_rotate']:
+                    s_dict['rotate_speed'] = st.slider(f"Velocità rotazione {i+1} (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
+
+            elif stripe_orient_i == "Cerchio":
+                col_cx, col_cy = st.columns(2)
+                with col_cx:
+                    s_dict['cx'] = float(st.slider(f"Centro X {i+1} (%)", 0, 100, 50, key=f"ccx_{i}"))
+                with col_cy:
+                    s_dict['cy'] = float(st.slider(f"Centro Y {i+1} (%)", 0, 100, 50, key=f"ccy_{i}"))
+                col_r, col_t = st.columns(2)
+                with col_r:
+                    s_dict['radius'] = float(st.slider(f"Raggio {i+1} (%)", 1, 100, 30, key=f"cr_{i}"))
+                with col_t:
+                    s_dict['size'] = st.slider(f"Spessore bordo {i+1} (px)", 1, 50, 8, key=f"ct_{i}",
+                        help="Usato solo se Cerchio pieno è OFF")
+                col_c1, col_c2, col_c3 = st.columns(3)
+                with col_c1:
+                    s_dict['filled'] = st.toggle(f"Cerchio pieno {i+1}", value=True, key=f"cf_{i}")
+                with col_c2:
+                    s_dict['length_audio'] = st.toggle(f"Raggio reattivo {i+1}", value=False, key=f"la_{i}",
+                        help="Il raggio pulsa col volume")
+                with col_c3:
+                    s_dict['auto_expand'] = st.toggle(f"Espansione ciclica {i+1}", value=False, key=f"ce_{i}",
+                        help="Il cerchio cresce e riparte dal centro")
+                s_dict['expand_speed'] = 20.0
+                if s_dict.get('auto_expand'):
+                    s_dict['expand_speed'] = st.slider(f"Velocità espansione {i+1} (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
+
+            # --- effetti comuni a tutti i tipi ---
             col_e1, col_e2 = st.columns(2)
             with col_e1:
-                chroma_on = st.toggle(f"🌈 Chroma aberration {i+1}", value=False, key=f"ch_{i}",
-                    help="Sfasa i canali RGB dentro la striscia")
+                chroma_on = st.toggle(f"Chroma {i+1}", value=False, key=f"ch_{i}")
             with col_e2:
-                flash_on = st.toggle(f"⚡ Flash sul beat {i+1}", value=False, key=f"fl_{i}",
-                    help="La striscia lampeggia sui beat forti")
-            chroma_amount = 6
+                s_dict['flash'] = st.toggle(f"Flash beat {i+1}", value=False, key=f"fl_{i}")
             if chroma_on:
-                chroma_amount = st.slider(f"Intensità chroma {i+1}", 1, 30, 6, key=f"ca_{i}")
-
-            offset_length = st.slider(
-                f"↔ Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}",
-                help="Sposta la striscia a sinistra (0) o destra (100). Default 50 = centrata.")
+                s_dict['chroma_amount'] = st.slider(f"Intensità chroma {i+1}", 1, 30, 6, key=f"ca_{i}")
 
             col_b1, col_b2 = st.columns(2)
             with col_b1:
-                blend_mode = st.selectbox(f"🎨 Blend mode {i+1}",
-                    ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}",
-                    help="Come questa striscia si combina con quello che c'è sotto")
+                s_dict['blend_mode'] = st.selectbox(f"Blend mode {i+1}",
+                    ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}")
             with col_b2:
-                opacity = st.slider(f"Opacità {i+1} (%)", 0, 100, 100, key=f"op_{i}") / 100.0
+                s_dict['opacity'] = st.slider(f"Opacità {i+1} (%)", 0, 100, 100, key=f"op_{i}") / 100.0
 
-            stripes.append({
-                'center':        center,
-                'size':          size,
-                'length':        float(length),
-                'length_audio':  length_audio,
-                'move_random':   move_random,
-                'move_speed':    move_speed,
-                'offset_length': float(offset_length),
-                'chroma_amount': chroma_amount,
-                'flash':         flash_on,
-                'orientation':   stripe_orient_i,
-                'blend_mode':    blend_mode,
-                'opacity':       opacity,
-            })
+            stripes.append(s_dict)
 
         st.divider()
 
@@ -908,14 +1051,43 @@ with c2:
                 if p1<dw: ov[l0:l1, p1:min(dw,p1+2)] = [80,40,200]
 
             for idx, s in enumerate(stripes):
-                use_h = s.get('orientation', stripe_orientation) == "Orizzontale"
-                off = s.get('offset_length', 50.0)
-                if use_h:
+                s_orient = s.get('orientation', stripe_orientation)
+                VIOLET = np.array([120, 80, 220])
+                DARK_V = np.array([80, 40, 200])
+
+                if s_orient == "Orizzontale":
+                    off = s.get('offset_length', 50.0)
                     p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dh, dw))
                     _draw_stripe_h(overlay, p0, p1, l0, l1)
-                else:
+
+                elif s_orient == "Verticale":
+                    off = s.get('offset_length', 50.0)
                     p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dw, dh))
                     _draw_stripe_v(overlay, p0, p1, l0, l1)
+
+                elif s_orient == "Lancetta":
+                    cx = int(s.get('cx', 50) / 100 * dw)
+                    cy = int(s.get('cy', 50) / 100 * dh)
+                    angle_rad = np.deg2rad(s.get('angle', 90))
+                    length_px = int(s.get('length', 50) / 100 * max(dh, dw))
+                    ex = int(cx + np.cos(angle_rad) * length_px)
+                    ey = int(cy - np.sin(angle_rad) * length_px)
+                    thickness = max(2, int(s.get('size', 15) * dw / 1000))
+                    cv2.line(overlay, (cx, cy), (ex, ey), (120, 80, 220), thickness)
+                    cv2.circle(overlay, (cx, cy), max(3, thickness), (80, 40, 200), -1)
+
+                elif s_orient == "Cerchio":
+                    cx = int(s.get('cx', 50) / 100 * dw)
+                    cy = int(s.get('cy', 50) / 100 * dh)
+                    radius = int(s.get('radius', 30) / 100 * max(dh, dw) / 2)
+                    radius = max(1, radius)
+                    if s.get('filled', True):
+                        mask_c = np.zeros((dh, dw), dtype=np.uint8)
+                        cv2.circle(mask_c, (cx, cy), radius, 255, -1)
+                        m3 = mask_c[:, :, np.newaxis] / 255.0
+                        overlay[:] = (overlay * (1 - m3 * 0.65) + VIOLET * m3 * 0.65).astype(np.uint8)
+                    else:
+                        cv2.circle(overlay, (cx, cy), radius, (120, 80, 220), max(2, s.get('size', 8)))
 
             caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
             if stripe_reverse:
