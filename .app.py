@@ -212,6 +212,51 @@ def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
 
 
 
+def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
+                          spessore_pct, lunghezza_pct, chroma_on, chroma_amt, mode, opacity):
+    """
+    Striscia rettangolare larga che ruota attorno al suo centro.
+    cx_pct, cy_pct: centro di rotazione (%)
+    angle_deg: angolo 0-360 (0=orizzontale, 90=verticale, 45=diagonale)
+    spessore_pct: altezza del rettangolo (% dell'immagine)
+    lunghezza_pct: larghezza del rettangolo (% dell'immagine)
+    """
+    cx = int(cx_pct / 100.0 * w)
+    cy = int(cy_pct / 100.0 * h)
+    half_h = int(spessore_pct / 100.0 * max(h, w) / 2.0)
+    half_w = int(lunghezza_pct / 100.0 * max(h, w) / 2.0)
+    half_h = max(1, half_h)
+    half_w = max(1, half_w)
+
+    angle_rad = np.deg2rad(angle_deg)
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+
+    # 4 angoli del rettangolo non ruotato, centrato in (cx, cy)
+    corners = np.array([
+        [-half_w, -half_h],
+        [ half_w, -half_h],
+        [ half_w,  half_h],
+        [-half_w,  half_h],
+    ], dtype=np.float32)
+
+    # Rotazione 2D
+    rot_matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+    rotated = (rot_matrix @ corners.T).T
+    pts = (rotated + np.array([cx, cy])).astype(np.int32)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [pts], 255)
+
+    patch = src_stripe.copy()
+    if chroma_on and chroma_amt > 0:
+        patch = apply_chroma(patch, chroma_amt)
+
+    blended = blend_patch(out, patch, mode, opacity)
+    mask3 = mask[:, :, np.newaxis] / 255.0
+    out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
                         stripe_reverse=False, audio_envelope_val=1.0,
@@ -384,7 +429,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         for s in stripes:
             s_orient = s.get('orientation', stripe_orientation)
 
-            if s_orient == "Lancetta" and s.get('auto_rotate', False):
+            if s_orient in ["Lancetta", "Striscia Ruotata"] and s.get('auto_rotate', False):
                 # rotazione continua: angolo cresce linearmente nel tempo
                 spd = s.get('rotate_speed', 30.0)  # gradi/secondo
                 start_angle = s.get('angle', 90.0)
@@ -908,7 +953,7 @@ with c2:
             st.caption(f"Striscia {i+1}")
 
             # orientamento individuale sempre disponibile
-            orient_opts = ["Orizzontale", "Verticale", "Lancetta", "Cerchio"]
+            orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
             if stripe_orientation == "Mix H+V":
                 orient_default = 0
             elif stripe_orientation in orient_opts:
@@ -945,6 +990,33 @@ with c2:
                 if s_dict['move_random']:
                     s_dict['move_speed'] = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
                 s_dict['offset_length'] = float(st.slider(f"Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}"))
+
+            elif stripe_orient_i == "Striscia Ruotata":
+                col_cx, col_cy = st.columns(2)
+                with col_cx:
+                    s_dict['cx'] = float(st.slider(f"Centro X {i+1} (%)", 0, 100, 50, key=f"rcx_{i}",
+                        help="Centro orizzontale di rotazione"))
+                with col_cy:
+                    s_dict['cy'] = float(st.slider(f"Centro Y {i+1} (%)", 0, 100, 50, key=f"rcy_{i}",
+                        help="Centro verticale di rotazione"))
+                col_a, col_sp, col_l = st.columns(3)
+                with col_a:
+                    s_dict['angle'] = float(st.slider(f"Angolo {i+1} (°)", 0, 360, 0, key=f"rang_{i}",
+                        help="0=orizzontale, 45=diagonale, 90=verticale, ecc."))
+                with col_sp:
+                    s_dict['size'] = float(st.slider(f"Spessore {i+1} (%)", 1, 100, 15, key=f"rsp_{i}",
+                        help="Quanto è larga la striscia"))
+                with col_l:
+                    s_dict['length'] = float(st.slider(f"Lunghezza {i+1} (%)", 5, 150, 100, key=f"rl_{i}",
+                        help="Quanto si estende (>100 = esce dai bordi)"))
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    s_dict['auto_rotate'] = st.toggle(f"Rotazione automatica {i+1}", value=False, key=f"rar_{i}")
+                with col_r2:
+                    s_dict['length_audio'] = st.toggle(f"Lunghezza reattiva {i+1}", value=False, key=f"la_{i}")
+                s_dict['rotate_speed'] = 30.0
+                if s_dict['auto_rotate']:
+                    s_dict['rotate_speed'] = st.slider(f"Velocità rotazione {i+1} (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
 
             elif stripe_orient_i == "Lancetta":
                 col_cx, col_cy = st.columns(2)
@@ -1064,30 +1136,47 @@ with c2:
                     off = s.get('offset_length', 50.0)
                     p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dw, dh))
                     _draw_stripe_v(overlay, p0, p1, l0, l1)
+                elif s_orient == "Striscia Ruotata":
+                    cx_r = int(s.get("cx", 50) / 100 * dw)
+                    cy_r = int(s.get("cy", 50) / 100 * dh)
+                    angle_rad_r = np.deg2rad(s.get("angle", 0))
+                    cos_r, sin_r = np.cos(angle_rad_r), np.sin(angle_rad_r)
+                    half_h_r = max(1, int(s.get("size", 15) / 100 * max(dh, dw) / 2))
+                    half_w_r = max(1, int(s.get("length", 100) / 100 * max(dh, dw) / 2))
+                    corners_r = np.array([[-half_w_r,-half_h_r],[half_w_r,-half_h_r],
+                                          [half_w_r,half_h_r],[-half_w_r,half_h_r]], dtype=np.float32)
+                    rot_r = np.array([[cos_r,-sin_r],[sin_r,cos_r]])
+                    pts_r = ((rot_r @ corners_r.T).T + np.array([cx_r,cy_r])).astype(np.int32)
+                    mask_r = np.zeros((dh, dw), dtype=np.uint8)
+                    cv2.fillPoly(mask_r, [pts_r], 255)
+                    m3_r = mask_r[:,:,np.newaxis] / 255.0
+                    overlay[:] = (overlay*(1-m3_r*0.65) + np.array([120,80,220])*m3_r*0.65).astype(np.uint8)
+                    cv2.polylines(overlay, [pts_r], True, (80,40,200), 2)
 
                 elif s_orient == "Lancetta":
-                    cx = int(s.get('cx', 50) / 100 * dw)
-                    cy = int(s.get('cy', 50) / 100 * dh)
-                    angle_rad = np.deg2rad(s.get('angle', 90))
-                    length_px = int(s.get('length', 50) / 100 * max(dh, dw))
+                    cx = int(s.get("cx", 50) / 100 * dw)
+                    cy = int(s.get("cy", 50) / 100 * dh)
+                    angle_rad = np.deg2rad(s.get("angle", 90))
+                    length_px = int(s.get("length", 50) / 100 * max(dh, dw))
                     ex = int(cx + np.cos(angle_rad) * length_px)
                     ey = int(cy - np.sin(angle_rad) * length_px)
-                    thickness = max(2, int(s.get('size', 15) * dw / 1000))
+                    thickness = max(2, int(s.get("size", 15) * dw / 1000))
                     cv2.line(overlay, (cx, cy), (ex, ey), (120, 80, 220), thickness)
                     cv2.circle(overlay, (cx, cy), max(3, thickness), (80, 40, 200), -1)
 
                 elif s_orient == "Cerchio":
-                    cx = int(s.get('cx', 50) / 100 * dw)
-                    cy = int(s.get('cy', 50) / 100 * dh)
-                    radius = int(s.get('radius', 30) / 100 * max(dh, dw) / 2)
+                    cx = int(s.get("cx", 50) / 100 * dw)
+                    cy = int(s.get("cy", 50) / 100 * dh)
+                    radius = int(s.get("radius", 30) / 100 * max(dh, dw) / 2)
                     radius = max(1, radius)
-                    if s.get('filled', True):
+                    if s.get("filled", True):
                         mask_c = np.zeros((dh, dw), dtype=np.uint8)
                         cv2.circle(mask_c, (cx, cy), radius, 255, -1)
                         m3 = mask_c[:, :, np.newaxis] / 255.0
                         overlay[:] = (overlay * (1 - m3 * 0.65) + VIOLET * m3 * 0.65).astype(np.uint8)
                     else:
-                        cv2.circle(overlay, (cx, cy), radius, (120, 80, 220), max(2, s.get('size', 8)))
+                        cv2.circle(overlay, (cx, cy), radius, (120, 80, 220), max(2, s.get("size", 8)))
+
 
             caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
             if stripe_reverse:
