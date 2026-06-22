@@ -2,5 +2,5 @@ streamlit
 numpy
 opencv-python-headless
 Pillow
-moviepy
+moviepy<2.0.0
 librosa
