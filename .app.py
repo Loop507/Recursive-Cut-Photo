@@ -1007,6 +1007,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 # INTERFACCIA
 # =====================================================================
 st.title("Recursive-Cut-Photo by Loop507 🔪")
+
+# dur viene definito in c3 ma serve in c2 (KF UI) — leggo da session_state con default
+if 'dur_value' not in st.session_state:
+    st.session_state.dur_value = 10
+
 c1, c2, c3 = st.columns([1, 1.2, 1])
 
 with c1:
@@ -1043,6 +1048,7 @@ with c2:
     st.divider()
 
     # ---- STRISCE SELETTIVE ----
+    dur = st.session_state.dur_value  # disponibile per kf_ui prima di c3
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False,
         help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
@@ -1458,6 +1464,7 @@ with c3:
     st.subheader("🎬 Rendering")
     fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
     dur = st.number_input("Durata (sec)", 1, 300, 10)
+    st.session_state.dur_value = int(dur)
 
     st.divider()
 
