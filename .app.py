@@ -33,6 +33,109 @@ GENRE_PRESETS = {
     "Hip Hop / Jazz":  {"beat_strength": 60, "beat_decay": 35, "onset": 50, "cache": 30, "rhythm": False},
 }
 
+# =====================================================================
+# KEYFRAME INTERPOLATION
+# =====================================================================
+
+def kf_interp(kf_list, t, total_dur):
+    """
+    Interpola linearmente una lista di keyframe [{t, v}, ...] al tempo t (sec).
+    Se la lista è vuota o None, ritorna None (usa valore statico).
+    kf_list è ordinata per t crescente.
+    """
+    if not kf_list or len(kf_list) == 0:
+        return None
+    kf_sorted = sorted(kf_list, key=lambda k: k['t'])
+    if t <= kf_sorted[0]['t']:
+        return float(kf_sorted[0]['v'])
+    if t >= kf_sorted[-1]['t']:
+        return float(kf_sorted[-1]['v'])
+    for a, b in zip(kf_sorted, kf_sorted[1:]):
+        if a['t'] <= t <= b['t']:
+            span = b['t'] - a['t']
+            if span < 1e-6:
+                return float(b['v'])
+            alpha = (t - a['t']) / span
+            return float(a['v'] + (b['v'] - a['v']) * alpha)
+    return float(kf_sorted[-1]['v'])
+
+
+def kf_get(s_dict, param, t, total_dur, default):
+    """
+    Restituisce il valore animato di `param` per la striscia s_dict al tempo t.
+    Se non ci sono KF per quel parametro, usa il valore statico.
+    """
+    kf_list = s_dict.get('keyframes', {}).get(param, [])
+    val = kf_interp(kf_list, t, total_dur)
+    if val is None:
+        return s_dict.get(param, default)
+    return val
+
+
+def kf_ui(param, label, min_v, max_v, default_v, step_v, stripe_id, dur, key_prefix):
+    """
+    Mostra UI per aggiungere/rimuovere keyframe di un parametro.
+    Salva i KF in st.session_state[key_prefix].
+    Ritorna la lista di KF corrente.
+    """
+    state_key = f"kf_{key_prefix}_{stripe_id}_{param}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = []
+
+    kfs = st.session_state[state_key]
+
+    # Pulsante fisarmonica
+    toggle_key = f"kf_open_{key_prefix}_{stripe_id}_{param}"
+    if toggle_key not in st.session_state:
+        st.session_state[toggle_key] = False
+
+    n_kf = len(kfs)
+    btn_label = f"🎬 KF {label} ({n_kf})" if n_kf > 0 else f"🎬 KF {label}"
+    if st.button(btn_label, key=f"kfbtn_{key_prefix}_{stripe_id}_{param}",
+                 help=f"Aggiungi/gestisci keyframe per {label}"):
+        st.session_state[toggle_key] = not st.session_state[toggle_key]
+
+    if st.session_state[toggle_key]:
+        with st.container(border=True):
+            st.caption(f"⏱️ Keyframe: {label}")
+            # Aggiungi nuovo KF
+            c_t, c_v, c_add = st.columns([2, 3, 1])
+            with c_t:
+                new_t = st.slider(f"t (sec)##{key_prefix}_{stripe_id}_{param}",
+                                  0.0, float(max(dur, 1)), 0.0, step=0.1,
+                                  key=f"kf_nt_{key_prefix}_{stripe_id}_{param}")
+            with c_v:
+                new_v = st.slider(f"valore##{key_prefix}_{stripe_id}_{param}",
+                                  float(min_v), float(max_v), float(default_v), step=float(step_v),
+                                  key=f"kf_nv_{key_prefix}_{stripe_id}_{param}")
+            with c_add:
+                st.write("")
+                if st.button("➕", key=f"kf_add_{key_prefix}_{stripe_id}_{param}",
+                             help="Aggiungi keyframe"):
+                    kfs.append({'t': round(new_t, 2), 'v': round(new_v, 4)})
+                    kfs.sort(key=lambda k: k['t'])
+                    st.session_state[state_key] = kfs
+                    st.rerun()
+
+            # Lista KF esistenti
+            to_del = None
+            for ki, kf in enumerate(kfs):
+                ck1, ck2, ck3 = st.columns([2, 3, 1])
+                with ck1:
+                    st.caption(f"t = {kf['t']:.1f}s")
+                with ck2:
+                    st.caption(f"v = {kf['v']:.2f}")
+                with ck3:
+                    if st.button("🗑️", key=f"kf_del_{key_prefix}_{stripe_id}_{param}_{ki}"):
+                        to_del = ki
+            if to_del is not None:
+                kfs.pop(to_del)
+                st.session_state[state_key] = kfs
+                st.rerun()
+
+    return st.session_state[state_key]
+
+
 def resize_to_format(img, format_type, half_res=False):
     if format_type == "16:9 (Orizzontale)": target_w, target_h = 1280, 720
     elif format_type == "9:16 (Verticale)":  target_w, target_h = 720, 1280
@@ -264,7 +367,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripe_reverse=False, audio_envelope_val=1.0,
                         stripe_offsets=None,
                         stripe_chroma=False, stripe_flash=False,
-                        beat_val=0.0):
+                        beat_val=0.0,
+                        t=0.0, total_dur=10.0):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
              move_random, move_speed, offset_length, chroma_amount,
@@ -307,9 +411,9 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
     def _draw(s, offset, is_h):
         if flash_active:
             return  # striscia spenta sul beat
-        center   = s['center']
-        size     = s['size']
-        base_len = s['length']
+        center   = kf_get(s, 'center', t, total_dur, s.get('center', 50))
+        size     = kf_get(s, 'size', t, total_dur, s.get('size', 10))
+        base_len = kf_get(s, 'length', t, total_dur, s.get('length', 100))
         if s.get('length_audio', False):
             base_len = base_len * (0.2 + 0.8 * audio_envelope_val)
         base_len = np.clip(base_len, 1.0, 100.0)
@@ -318,7 +422,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             length_offset = offset
         chroma_amt = int(s.get('chroma_amount', 6))
         blend_mode = s.get('blend_mode', 'Normal')
-        opacity    = float(s.get('opacity', 1.0))
+        opacity    = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
@@ -338,41 +442,44 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
 
         if s_orient == "Lancetta":
             # angolo base + rotazione automatica nel tempo (offset usato come angolo corrente)
-            angle = s.get('angle', 90.0)
+            angle = kf_get(s, 'angle', t, total_dur, s.get('angle', 90.0))
             if s.get('auto_rotate', False):
                 angle = offset  # offset precomputato come angolo corrente
-            length_pct = s.get('length', 50.0)
+            length_pct = kf_get(s, 'length', t, total_dur, s.get('length', 50.0))
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
+            opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             draw_lancetta(out, src_stripe, h, w,
                           s.get('cx', 50.0), s.get('cy', 50.0),
                           angle, length_pct,
-                          int(s.get('size', 10)),
+                          int(kf_get(s, 'size', t, total_dur, s.get('size', 10))),
                           chroma_on, chroma_amt, mode, opacity)
 
         elif s_orient == "Cerchio":
-            radius = s.get('radius', 30.0)
+            radius = kf_get(s, 'radius', t, total_dur, s.get('radius', 30.0))
             if s.get('length_audio', False):
                 radius = radius * (0.2 + 0.8 * audio_envelope_val)
             if s.get('auto_expand', False):
                 radius = offset  # offset precomputato come raggio crescente
+            opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             draw_cerchio(out, src_stripe, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
                          radius, s.get('filled', True),
-                         int(s.get('size', 8)),
+                         int(kf_get(s, 'size', t, total_dur, s.get('size', 8))),
                          chroma_on, chroma_amt, mode, opacity)
 
         elif s_orient == "Striscia Ruotata":
-            angle = s.get('angle', 0.0)
+            angle = kf_get(s, 'angle', t, total_dur, s.get('angle', 0.0))
             if s.get('auto_rotate', False):
                 angle = offset
-            length_pct = s.get('length', 100.0)
+            length_pct = kf_get(s, 'length', t, total_dur, s.get('length', 100.0))
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
+            opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             draw_striscia_ruotata(out, src_stripe, h, w,
                                   s.get('cx', 50.0), s.get('cy', 50.0),
                                   angle,
-                                  float(s.get('size', 15.0)),
+                                  float(kf_get(s, 'size', t, total_dur, s.get('size', 15.0))),
                                   length_pct,
                                   chroma_on, chroma_amt, mode, opacity)
 
@@ -596,7 +703,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     out_frame = apply_stripe_window(_get_bg_slide(img_cur), img_cur, img_cur, h, w,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
-                                                    stripe_chroma, stripe_flash, _bval)
+                                                    stripe_chroma, stripe_flash, _bval,
+                                                    t=t, total_dur=max_limit)
                 else:
                     out_frame = img_cur
                 return cv2.resize(out_frame, (out_w, out_h))
@@ -618,7 +726,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         out_frame = apply_stripe_window(_get_bg_slide(glitched), base, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
-                                                        stripe_chroma, stripe_flash, _bval)
+                                                        stripe_chroma, stripe_flash, _bval,
+                                                        t=t, total_dur=max_limit)
                     else:
                         out_frame = glitched
                 else:
@@ -629,7 +738,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         out_frame = apply_stripe_window(_get_bg_slide(glitched), blend, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
-                                                        stripe_chroma, stripe_flash, _bval)
+                                                        stripe_chroma, stripe_flash, _bval,
+                                                        t=t, total_dur=max_limit)
                     else:
                         out_frame = glitched
 
@@ -760,7 +870,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     return cv2.resize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
-                                            _aenv, _soff, stripe_chroma, stripe_flash, _bval),
+                                            _aenv, _soff, stripe_chroma, stripe_flash, _bval,
+                                            t=t, total_dur=max_limit),
                         (out_w, out_h))
                 return cv2.resize(pick(), (out_w, out_h))
 
@@ -811,7 +922,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
-                                            stripe_chroma, stripe_flash, _bval)
+                                            stripe_chroma, stripe_flash, _bval,
+                                            t=t, total_dur=max_limit)
 
             # --- Effetti globali standalone (senza strisce selettive) ---
             if not stripe_mode:
@@ -861,7 +973,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
 
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
-:: MOTORE: recursive_cut_pro [v9.3]
+:: MOTORE: recursive_cut_pro [v10.0 — keyframe]
 :: EFFETTO: Recursive Strand Shift
 :: ANALISI: RMS / Beat Sync / Rhythm Tracking
 :: PROCESSO: Frammentazione Ricorsiva
@@ -1026,6 +1138,14 @@ with c2:
                 if s_dict['move_random']:
                     s_dict['move_speed'] = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
                 s_dict['offset_length'] = float(st.slider(f"Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}"))
+                # --- KF ---
+                kf_col1, kf_col2, kf_col3 = st.columns(3)
+                with kf_col1:
+                    s_dict.setdefault('keyframes', {})['center'] = kf_ui('center', 'Centro', 0, 100, s_dict['center'], 1, i, dur, 'hv')
+                with kf_col2:
+                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore', 1, 100, s_dict['size'], 1, i, dur, 'hv')
+                with kf_col3:
+                    s_dict['keyframes']['length'] = kf_ui('length', 'Lunghezza', 5, 100, s_dict['length'], 1, i, dur, 'hv')
 
             elif stripe_orient_i == "Striscia Ruotata":
                 col_cx, col_cy = st.columns(2)
@@ -1053,6 +1173,14 @@ with c2:
                 s_dict['rotate_speed'] = 30.0
                 if s_dict['auto_rotate']:
                     s_dict['rotate_speed'] = st.slider(f"Velocità rotazione {i+1} (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
+                # --- KF ---
+                kf_col1, kf_col2, kf_col3 = st.columns(3)
+                with kf_col1:
+                    s_dict.setdefault('keyframes', {})['angle'] = kf_ui('angle', 'Angolo', 0, 360, s_dict['angle'], 1, i, dur, 'rot')
+                with kf_col2:
+                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore', 1, 100, s_dict['size'], 1, i, dur, 'rot')
+                with kf_col3:
+                    s_dict['keyframes']['length'] = kf_ui('length', 'Lunghezza', 5, 150, s_dict['length'], 1, i, dur, 'rot')
 
             elif stripe_orient_i == "Lancetta":
                 col_cx, col_cy = st.columns(2)
@@ -1078,6 +1206,14 @@ with c2:
                 s_dict['rotate_speed'] = 30.0
                 if s_dict['auto_rotate']:
                     s_dict['rotate_speed'] = st.slider(f"Velocità rotazione {i+1} (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
+                # --- KF ---
+                kf_col1, kf_col2, kf_col3 = st.columns(3)
+                with kf_col1:
+                    s_dict.setdefault('keyframes', {})['angle'] = kf_ui('angle', 'Angolo', 0, 360, s_dict['angle'], 1, i, dur, 'lan')
+                with kf_col2:
+                    s_dict['keyframes']['length'] = kf_ui('length', 'Lunghezza', 5, 100, s_dict['length'], 1, i, dur, 'lan')
+                with kf_col3:
+                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore', 2, 100, s_dict['size'], 1, i, dur, 'lan')
 
             elif stripe_orient_i == "Cerchio":
                 col_cx, col_cy = st.columns(2)
@@ -1103,6 +1239,12 @@ with c2:
                 s_dict['expand_speed'] = 20.0
                 if s_dict.get('auto_expand'):
                     s_dict['expand_speed'] = st.slider(f"Velocità espansione {i+1} (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
+                # --- KF ---
+                kf_col1, kf_col2 = st.columns(2)
+                with kf_col1:
+                    s_dict.setdefault('keyframes', {})['radius'] = kf_ui('radius', 'Raggio', 1, 100, s_dict['radius'], 1, i, dur, 'cer')
+                with kf_col2:
+                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore bordo', 1, 50, s_dict['size'], 1, i, dur, 'cer')
 
             # --- effetti comuni a tutti i tipi ---
             col_e1, col_e2 = st.columns(2)
@@ -1119,6 +1261,10 @@ with c2:
                     ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}")
             with col_b2:
                 s_dict['opacity'] = st.slider(f"Opacità {i+1} (%)", 0, 100, 100, key=f"op_{i}") / 100.0
+
+            # --- KF opacità (comune a tutti i tipi) ---
+            s_dict.setdefault('keyframes', {})['opacity'] = kf_ui(
+                'opacity', 'Opacità', 0.0, 1.0, s_dict['opacity'], 0.01, i, dur, 'com')
 
             stripes.append(s_dict)
 
