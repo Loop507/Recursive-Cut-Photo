@@ -72,68 +72,74 @@ def kf_get(s_dict, param, t, total_dur, default):
     return val
 
 
-def kf_ui(param, label, min_v, max_v, default_v, step_v, stripe_id, dur, key_prefix):
+def kf_expander_ui(stripe_id, dur, params_meta):
     """
-    Mostra UI per aggiungere/rimuovere keyframe di un parametro.
-    Salva i KF in st.session_state[key_prefix].
-    Ritorna la lista di KF corrente.
+    Un solo expander per striscia — tabella keyframe unificata.
+    params_meta: lista di dict { param, label, min_v, max_v, default_v, step_v }
+    Ritorna dict { param: [{t, v}, ...] }
     """
-    state_key = f"kf_{key_prefix}_{stripe_id}_{param}"
+    state_key = f"kf_stripe_{stripe_id}"
     if state_key not in st.session_state:
-        st.session_state[state_key] = []
+        st.session_state[state_key] = {}
+    kf_state = st.session_state[state_key]
+    for m in params_meta:
+        kf_state.setdefault(m['param'], [])
 
-    kfs = st.session_state[state_key]
+    param_labels = [m['label'] for m in params_meta]
+    param_map    = {m['param']: m for m in params_meta}
 
-    # Pulsante fisarmonica
-    toggle_key = f"kf_open_{key_prefix}_{stripe_id}_{param}"
-    if toggle_key not in st.session_state:
-        st.session_state[toggle_key] = False
+    total_kf = sum(len(v) for v in kf_state.values())
+    exp_label = f"\U0001f3ac Keyframe striscia {stripe_id+1}" + (f"  \u2014 {total_kf} KF attivi" if total_kf else "")
 
-    n_kf = len(kfs)
-    btn_label = f"🎬 KF {label} ({n_kf})" if n_kf > 0 else f"🎬 KF {label}"
-    if st.button(btn_label, key=f"kfbtn_{key_prefix}_{stripe_id}_{param}",
-                 help=f"Aggiungi/gestisci keyframe per {label}"):
-        st.session_state[toggle_key] = not st.session_state[toggle_key]
-
-    if st.session_state[toggle_key]:
-        with st.container(border=True):
-            st.caption(f"⏱️ Keyframe: {label}")
-            # Aggiungi nuovo KF
-            c_t, c_v, c_add = st.columns([2, 3, 1])
-            with c_t:
-                new_t = st.slider(f"t (sec)##{key_prefix}_{stripe_id}_{param}",
-                                  0.0, float(max(dur, 1)), 0.0, step=0.1,
-                                  key=f"kf_nt_{key_prefix}_{stripe_id}_{param}")
-            with c_v:
-                new_v = st.slider(f"valore##{key_prefix}_{stripe_id}_{param}",
-                                  float(min_v), float(max_v), float(default_v), step=float(step_v),
-                                  key=f"kf_nv_{key_prefix}_{stripe_id}_{param}")
-            with c_add:
-                st.write("")
-                if st.button("➕", key=f"kf_add_{key_prefix}_{stripe_id}_{param}",
-                             help="Aggiungi keyframe"):
-                    kfs.append({'t': round(new_t, 2), 'v': round(new_v, 4)})
-                    kfs.sort(key=lambda k: k['t'])
-                    st.session_state[state_key] = kfs
-                    st.rerun()
-
-            # Lista KF esistenti
-            to_del = None
-            for ki, kf in enumerate(kfs):
-                ck1, ck2, ck3 = st.columns([2, 3, 1])
-                with ck1:
-                    st.caption(f"t = {kf['t']:.1f}s")
-                with ck2:
-                    st.caption(f"v = {kf['v']:.2f}")
-                with ck3:
-                    if st.button("🗑️", key=f"kf_del_{key_prefix}_{stripe_id}_{param}_{ki}"):
-                        to_del = ki
-            if to_del is not None:
-                kfs.pop(to_del)
-                st.session_state[state_key] = kfs
+    with st.expander(exp_label, expanded=False):
+        st.caption("Imposta la striscia con gli slider sopra, poi aggiungi qui i cambiamenti nel tempo.")
+        ca, cb, cc, cd = st.columns([2, 2, 2, 1])
+        with ca:
+            sel_label = st.selectbox("Parametro", param_labels, key=f"kf_sel_{stripe_id}")
+            sel_param = next(m['param'] for m in params_meta if m['label'] == sel_label)
+            meta = param_map[sel_param]
+        with cb:
+            new_t = st.number_input("t (sec)", min_value=0.0, max_value=float(max(dur, 1)),
+                                    value=0.0, step=0.5, key=f"kf_t_{stripe_id}")
+        with cc:
+            new_v = st.number_input("valore", min_value=float(meta['min_v']),
+                                    max_value=float(meta['max_v']),
+                                    value=float(meta['default_v']),
+                                    step=float(meta.get('step_v', 1)),
+                                    key=f"kf_v_{stripe_id}")
+        with cd:
+            st.write("")
+            st.write("")
+            if st.button("\u2795 Aggiungi", key=f"kf_add_{stripe_id}"):
+                kf_state[sel_param].append({'t': round(float(new_t), 2), 'v': round(float(new_v), 4)})
+                kf_state[sel_param].sort(key=lambda k: k['t'])
+                st.session_state[state_key] = kf_state
                 st.rerun()
 
-    return st.session_state[state_key]
+        all_kfs = [(p, ki, kf) for p, lst in kf_state.items() for ki, kf in enumerate(lst)]
+        all_kfs.sort(key=lambda x: x[2]['t'])
+
+        if all_kfs:
+            st.divider()
+            to_del = None
+            for p, ki, kf in all_kfs:
+                lbl = param_map[p]['label']
+                r1, r2, r3, r4 = st.columns([2, 3, 3, 1])
+                with r1: st.caption(f"t = **{kf['t']:.1f}s**")
+                with r2: st.caption(lbl)
+                with r3: st.caption(f"\u2192 {kf['v']:.2f}")
+                with r4:
+                    if st.button("\u2715", key=f"kf_del_{stripe_id}_{p}_{ki}"):
+                        to_del = (p, ki)
+            if to_del:
+                p, ki = to_del
+                kf_state[p].pop(ki)
+                st.session_state[state_key] = kf_state
+                st.rerun()
+        else:
+            st.caption("\u2014 Nessun KF: la striscia usa i valori degli slider per tutta la durata.")
+
+    return kf_state
 
 
 def resize_to_format(img, format_type, half_res=False):
@@ -1092,185 +1098,189 @@ with c2:
         with col_ninfo:
             st.caption(f"{len(st.session_state.stripe_ids)} striscia/e attive")
 
-        # Raccogliamo quale striscia eliminare (se richiesto)
+        # --- LOOP STRISCE: ogni striscia in un expander ---
         _to_delete = None
 
         for _loop_idx, i in enumerate(list(st.session_state.stripe_ids)):
-            col_title, col_del = st.columns([5, 1])
-            with col_title:
-                st.caption(f"Striscia {_loop_idx+1}")
-            with col_del:
-                if st.button("✕", key=f"del_stripe_{i}", help=f"Elimina striscia {_loop_idx+1}"):
-                    _to_delete = i
-
             if _to_delete == i:
-                continue  # saltiamo il render di questa striscia
+                continue
 
-            # orientamento individuale sempre disponibile
-            orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
-            if stripe_orientation == "Mix H+V":
-                orient_default = 0
-            elif stripe_orientation in orient_opts:
-                orient_default = orient_opts.index(stripe_orientation)
-            else:
-                orient_default = 0
-            stripe_orient_i = st.radio(
-                f"Forma striscia {i+1}", orient_opts,
-                index=orient_default, horizontal=True, key=f"so_{i}")
+            # Titolo expander dinamico
+            _cur_orient = st.session_state.get(f"so_{i}", "Orizzontale")
+            _kf_count = sum(len(v) for v in st.session_state.get(f"kf_stripe_{i}", {}).values())
+            _kf_tag = f" · {_kf_count} KF" if _kf_count else ""
+            _exp_title = f"Striscia {_loop_idx+1} — {_cur_orient}{_kf_tag}"
 
-            # --- controlli specifici per tipo ---
-            s_dict = {
-                'orientation':   stripe_orient_i,
-                'chroma_amount': 6,
-                'flash':         False,
-                'blend_mode':    'Normal',
-                'opacity':       1.0,
-            }
+            with st.expander(_exp_title, expanded=(_loop_idx == 0)):
 
-            if stripe_orient_i in ["Orizzontale", "Verticale"]:
-                ca, cb, cc = st.columns(3)
-                with ca:
-                    s_dict['center'] = st.slider(f"Centro {i+1} (%)", 0, 100, min(20+i*25,95), key=f"sc_{i}")
-                with cb:
-                    s_dict['size'] = st.slider(f"Spessore {i+1} (%)", 1, 100, 10, key=f"ss_{i}")
-                with cc:
-                    s_dict['length'] = float(st.slider(f"Lunghezza {i+1} (%)", 5, 100, 100, key=f"sl_{i}"))
-                col_m1, col_m2 = st.columns(2)
-                with col_m1:
-                    s_dict['length_audio'] = st.toggle(f"Lunghezza reattiva {i+1}", value=False, key=f"la_{i}")
-                with col_m2:
-                    s_dict['move_random'] = st.toggle(f"Movimento random {i+1}", value=False, key=f"mr_{i}")
-                s_dict['move_speed'] = 1.0
-                if s_dict['move_random']:
-                    s_dict['move_speed'] = st.slider(f"Velocità movimento {i+1}", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
-                s_dict['offset_length'] = float(st.slider(f"Offset dx/sx {i+1} (%)", 0, 100, 50, key=f"oc_{i}"))
-                # --- KF ---
-                kf_col1, kf_col2, kf_col3 = st.columns(3)
-                with kf_col1:
-                    s_dict.setdefault('keyframes', {})['center'] = kf_ui('center', 'Centro', 0, 100, s_dict['center'], 1, i, dur, 'hv')
-                with kf_col2:
-                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore', 1, 100, s_dict['size'], 1, i, dur, 'hv')
-                with kf_col3:
-                    s_dict['keyframes']['length'] = kf_ui('length', 'Lunghezza', 5, 100, s_dict['length'], 1, i, dur, 'hv')
+                # Pulsante elimina in cima all'expander
+                if st.button(f"🗑️ Elimina striscia {_loop_idx+1}", key=f"del_stripe_{i}"):
+                    _to_delete = i
+                    continue
 
-            elif stripe_orient_i == "Striscia Ruotata":
-                col_cx, col_cy = st.columns(2)
-                with col_cx:
-                    s_dict['cx'] = float(st.slider(f"Centro X {i+1} (%)", 0, 100, 50, key=f"rcx_{i}",
-                        help="Centro orizzontale di rotazione"))
-                with col_cy:
-                    s_dict['cy'] = float(st.slider(f"Centro Y {i+1} (%)", 0, 100, 50, key=f"rcy_{i}",
-                        help="Centro verticale di rotazione"))
-                col_a, col_sp, col_l = st.columns(3)
-                with col_a:
-                    s_dict['angle'] = float(st.slider(f"Angolo {i+1} (°)", 0, 360, 0, key=f"rang_{i}",
-                        help="0=orizzontale, 45=diagonale, 90=verticale, ecc."))
-                with col_sp:
-                    s_dict['size'] = float(st.slider(f"Spessore {i+1} (%)", 1, 100, 15, key=f"rsp_{i}",
-                        help="Quanto è larga la striscia"))
-                with col_l:
-                    s_dict['length'] = float(st.slider(f"Lunghezza {i+1} (%)", 5, 150, 100, key=f"rl_{i}",
-                        help="Quanto si estende (>100 = esce dai bordi)"))
-                col_r1, col_r2 = st.columns(2)
-                with col_r1:
-                    s_dict['auto_rotate'] = st.toggle(f"Rotazione automatica {i+1}", value=False, key=f"rar_{i}")
-                with col_r2:
-                    s_dict['length_audio'] = st.toggle(f"Lunghezza reattiva {i+1}", value=False, key=f"la_{i}")
-                s_dict['rotate_speed'] = 30.0
-                if s_dict['auto_rotate']:
-                    s_dict['rotate_speed'] = st.slider(f"Velocità rotazione {i+1} (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
-                # --- KF ---
-                kf_col1, kf_col2, kf_col3 = st.columns(3)
-                with kf_col1:
-                    s_dict.setdefault('keyframes', {})['angle'] = kf_ui('angle', 'Angolo', 0, 360, s_dict['angle'], 1, i, dur, 'rot')
-                with kf_col2:
-                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore', 1, 100, s_dict['size'], 1, i, dur, 'rot')
-                with kf_col3:
-                    s_dict['keyframes']['length'] = kf_ui('length', 'Lunghezza', 5, 150, s_dict['length'], 1, i, dur, 'rot')
+                # Forma
+                orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
+                if stripe_orientation == "Mix H+V":
+                    orient_default = 0
+                elif stripe_orientation in orient_opts:
+                    orient_default = orient_opts.index(stripe_orientation)
+                else:
+                    orient_default = 0
+                stripe_orient_i = st.radio(
+                    "Forma", orient_opts,
+                    index=orient_default, horizontal=True, key=f"so_{i}")
 
-            elif stripe_orient_i == "Lancetta":
-                col_cx, col_cy = st.columns(2)
-                with col_cx:
-                    s_dict['cx'] = float(st.slider(f"Centro X {i+1} (%)", 0, 100, 50, key=f"lcx_{i}",
-                        help="Punto di pivot orizzontale"))
-                with col_cy:
-                    s_dict['cy'] = float(st.slider(f"Centro Y {i+1} (%)", 0, 100, 50, key=f"lcy_{i}",
-                        help="Punto di pivot verticale"))
-                col_a, col_l, col_t = st.columns(3)
-                with col_a:
-                    s_dict['angle'] = float(st.slider(f"Angolo {i+1} (°)", 0, 360, 90, key=f"lang_{i}",
-                        help="0=destra, 90=su, 180=sinistra, 270=giù"))
-                with col_l:
-                    s_dict['length'] = float(st.slider(f"Lunghezza {i+1} (%)", 5, 100, 50, key=f"ll_{i}"))
-                with col_t:
-                    s_dict['size'] = st.slider(f"Spessore {i+1} (px)", 2, 100, 15, key=f"lt_{i}")
-                col_r1, col_r2 = st.columns(2)
-                with col_r1:
-                    s_dict['auto_rotate'] = st.toggle(f"Rotazione automatica {i+1}", value=False, key=f"lar_{i}")
-                with col_r2:
-                    s_dict['length_audio'] = st.toggle(f"Lunghezza reattiva {i+1}", value=False, key=f"la_{i}")
-                s_dict['rotate_speed'] = 30.0
-                if s_dict['auto_rotate']:
-                    s_dict['rotate_speed'] = st.slider(f"Velocità rotazione {i+1} (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
-                # --- KF ---
-                kf_col1, kf_col2, kf_col3 = st.columns(3)
-                with kf_col1:
-                    s_dict.setdefault('keyframes', {})['angle'] = kf_ui('angle', 'Angolo', 0, 360, s_dict['angle'], 1, i, dur, 'lan')
-                with kf_col2:
-                    s_dict['keyframes']['length'] = kf_ui('length', 'Lunghezza', 5, 100, s_dict['length'], 1, i, dur, 'lan')
-                with kf_col3:
-                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore', 2, 100, s_dict['size'], 1, i, dur, 'lan')
+                s_dict = {
+                    'orientation':   stripe_orient_i,
+                    'chroma_amount': 6,
+                    'flash':         False,
+                    'blend_mode':    'Normal',
+                    'opacity':       1.0,
+                }
 
-            elif stripe_orient_i == "Cerchio":
-                col_cx, col_cy = st.columns(2)
-                with col_cx:
-                    s_dict['cx'] = float(st.slider(f"Centro X {i+1} (%)", 0, 100, 50, key=f"ccx_{i}"))
-                with col_cy:
-                    s_dict['cy'] = float(st.slider(f"Centro Y {i+1} (%)", 0, 100, 50, key=f"ccy_{i}"))
-                col_r, col_t = st.columns(2)
-                with col_r:
-                    s_dict['radius'] = float(st.slider(f"Raggio {i+1} (%)", 1, 100, 30, key=f"cr_{i}"))
-                with col_t:
-                    s_dict['size'] = st.slider(f"Spessore bordo {i+1} (px)", 1, 50, 8, key=f"ct_{i}",
-                        help="Usato solo se Cerchio pieno è OFF")
-                col_c1, col_c2, col_c3 = st.columns(3)
-                with col_c1:
-                    s_dict['filled'] = st.toggle(f"Cerchio pieno {i+1}", value=True, key=f"cf_{i}")
-                with col_c2:
-                    s_dict['length_audio'] = st.toggle(f"Raggio reattivo {i+1}", value=False, key=f"la_{i}",
-                        help="Il raggio pulsa col volume")
-                with col_c3:
-                    s_dict['auto_expand'] = st.toggle(f"Espansione ciclica {i+1}", value=False, key=f"ce_{i}",
-                        help="Il cerchio cresce e riparte dal centro")
-                s_dict['expand_speed'] = 20.0
-                if s_dict.get('auto_expand'):
-                    s_dict['expand_speed'] = st.slider(f"Velocità espansione {i+1} (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
-                # --- KF ---
-                kf_col1, kf_col2 = st.columns(2)
-                with kf_col1:
-                    s_dict.setdefault('keyframes', {})['radius'] = kf_ui('radius', 'Raggio', 1, 100, s_dict['radius'], 1, i, dur, 'cer')
-                with kf_col2:
-                    s_dict['keyframes']['size'] = kf_ui('size', 'Spessore bordo', 1, 50, s_dict['size'], 1, i, dur, 'cer')
+                st.divider()
 
-            # --- effetti comuni a tutti i tipi ---
-            col_e1, col_e2 = st.columns(2)
-            with col_e1:
-                chroma_on = st.toggle(f"Chroma {i+1}", value=False, key=f"ch_{i}")
-            with col_e2:
-                s_dict['flash'] = st.toggle(f"Flash beat {i+1}", value=False, key=f"fl_{i}")
-            if chroma_on:
-                s_dict['chroma_amount'] = st.slider(f"Intensità chroma {i+1}", 1, 30, 6, key=f"ca_{i}")
+                # Controlli specifici per tipo
+                if stripe_orient_i in ["Orizzontale", "Verticale"]:
+                    ca, cb, cc = st.columns(3)
+                    with ca:
+                        s_dict['center'] = st.slider("Centro (%)", 0, 100, min(20+i*25,95), key=f"sc_{i}")
+                    with cb:
+                        s_dict['size'] = st.slider("Spessore (%)", 1, 100, 10, key=f"ss_{i}")
+                    with cc:
+                        s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 100, 100, key=f"sl_{i}"))
+                    col_m1, col_m2 = st.columns(2)
+                    with col_m1:
+                        s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
+                    with col_m2:
+                        s_dict['move_random'] = st.toggle("Movimento random", value=False, key=f"mr_{i}")
+                    s_dict['move_speed'] = 1.0
+                    if s_dict['move_random']:
+                        s_dict['move_speed'] = st.slider("Velocità movimento", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
+                    s_dict['offset_length'] = float(st.slider("Offset dx/sx (%)", 0, 100, 50, key=f"oc_{i}"))
 
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                s_dict['blend_mode'] = st.selectbox(f"Blend mode {i+1}",
-                    ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}")
-            with col_b2:
-                s_dict['opacity'] = st.slider(f"Opacità {i+1} (%)", 0, 100, 100, key=f"op_{i}") / 100.0
+                elif stripe_orient_i == "Striscia Ruotata":
+                    col_cx, col_cy = st.columns(2)
+                    with col_cx:
+                        s_dict['cx'] = float(st.slider("Centro X (%)", 0, 100, 50, key=f"rcx_{i}"))
+                    with col_cy:
+                        s_dict['cy'] = float(st.slider("Centro Y (%)", 0, 100, 50, key=f"rcy_{i}"))
+                    col_a, col_sp, col_l = st.columns(3)
+                    with col_a:
+                        s_dict['angle'] = float(st.slider("Angolo (°)", 0, 360, 0, key=f"rang_{i}",
+                            help="0=orizzontale, 45=diagonale, 90=verticale"))
+                    with col_sp:
+                        s_dict['size'] = float(st.slider("Spessore (%)", 1, 100, 15, key=f"rsp_{i}"))
+                    with col_l:
+                        s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 150, 100, key=f"rl_{i}",
+                            help=">100 = esce dai bordi"))
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1:
+                        s_dict['auto_rotate'] = st.toggle("Rotazione automatica", value=False, key=f"rar_{i}")
+                    with col_r2:
+                        s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
+                    s_dict['rotate_speed'] = 30.0
+                    if s_dict['auto_rotate']:
+                        s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
 
-            # --- KF opacità (comune a tutti i tipi) ---
-            s_dict.setdefault('keyframes', {})['opacity'] = kf_ui(
-                'opacity', 'Opacità', 0.0, 1.0, s_dict['opacity'], 0.01, i, dur, 'com')
+                elif stripe_orient_i == "Lancetta":
+                    col_cx, col_cy = st.columns(2)
+                    with col_cx:
+                        s_dict['cx'] = float(st.slider("Pivot X (%)", 0, 100, 50, key=f"lcx_{i}"))
+                    with col_cy:
+                        s_dict['cy'] = float(st.slider("Pivot Y (%)", 0, 100, 50, key=f"lcy_{i}"))
+                    col_a, col_l, col_t = st.columns(3)
+                    with col_a:
+                        s_dict['angle'] = float(st.slider("Angolo (°)", 0, 360, 90, key=f"lang_{i}",
+                            help="0=destra, 90=su, 180=sinistra, 270=giù"))
+                    with col_l:
+                        s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 100, 50, key=f"ll_{i}"))
+                    with col_t:
+                        s_dict['size'] = st.slider("Spessore (px)", 2, 100, 15, key=f"lt_{i}")
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1:
+                        s_dict['auto_rotate'] = st.toggle("Rotazione automatica", value=False, key=f"lar_{i}")
+                    with col_r2:
+                        s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
+                    s_dict['rotate_speed'] = 30.0
+                    if s_dict['auto_rotate']:
+                        s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
+
+                elif stripe_orient_i == "Cerchio":
+                    col_cx, col_cy = st.columns(2)
+                    with col_cx:
+                        s_dict['cx'] = float(st.slider("Centro X (%)", 0, 100, 50, key=f"ccx_{i}"))
+                    with col_cy:
+                        s_dict['cy'] = float(st.slider("Centro Y (%)", 0, 100, 50, key=f"ccy_{i}"))
+                    col_r, col_t = st.columns(2)
+                    with col_r:
+                        s_dict['radius'] = float(st.slider("Raggio (%)", 1, 100, 30, key=f"cr_{i}"))
+                    with col_t:
+                        s_dict['size'] = st.slider("Spessore bordo (px)", 1, 50, 8, key=f"ct_{i}",
+                            help="Usato solo se Cerchio pieno è OFF")
+                    col_c1, col_c2, col_c3 = st.columns(3)
+                    with col_c1:
+                        s_dict['filled'] = st.toggle("Cerchio pieno", value=True, key=f"cf_{i}")
+                    with col_c2:
+                        s_dict['length_audio'] = st.toggle("Raggio reattivo", value=False, key=f"la_{i}",
+                            help="Il raggio pulsa col volume")
+                    with col_c3:
+                        s_dict['auto_expand'] = st.toggle("Espansione ciclica", value=False, key=f"ce_{i}",
+                            help="Il cerchio cresce e riparte dal centro")
+                    s_dict['expand_speed'] = 20.0
+                    if s_dict.get('auto_expand'):
+                        s_dict['expand_speed'] = st.slider("Velocità espansione (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
+
+                st.divider()
+
+                # Effetti comuni
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    chroma_on = st.toggle("🌈 Chroma", value=False, key=f"ch_{i}")
+                with col_e2:
+                    s_dict['flash'] = st.toggle("⚡ Flash beat", value=False, key=f"fl_{i}")
+                if chroma_on:
+                    s_dict['chroma_amount'] = st.slider("Intensità chroma (px)", 1, 30, 6, key=f"ca_{i}")
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    s_dict['blend_mode'] = st.selectbox("Blend mode",
+                        ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}")
+                with col_b2:
+                    s_dict['opacity'] = st.slider("Opacità (%)", 0, 100, 100, key=f"op_{i}") / 100.0
+
+                st.divider()
+
+                # Keyframe
+                _params_meta = []
+                if stripe_orient_i in ['Orizzontale', 'Verticale']:
+                    _params_meta = [
+                        {'param':'center','label':'Centro (%)','min_v':0,'max_v':100,'default_v':s_dict.get('center',50),'step_v':1},
+                        {'param':'size','label':'Spessore (%)','min_v':1,'max_v':100,'default_v':s_dict.get('size',10),'step_v':1},
+                        {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':100,'default_v':s_dict.get('length',100),'step_v':1},
+                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                    ]
+                elif stripe_orient_i == 'Striscia Ruotata':
+                    _params_meta = [
+                        {'param':'angle','label':'Angolo (°)','min_v':0,'max_v':360,'default_v':s_dict.get('angle',0),'step_v':1},
+                        {'param':'size','label':'Spessore (%)','min_v':1,'max_v':100,'default_v':s_dict.get('size',15),'step_v':1},
+                        {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':150,'default_v':s_dict.get('length',100),'step_v':1},
+                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                    ]
+                elif stripe_orient_i == 'Lancetta':
+                    _params_meta = [
+                        {'param':'angle','label':'Angolo (°)','min_v':0,'max_v':360,'default_v':s_dict.get('angle',90),'step_v':1},
+                        {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':100,'default_v':s_dict.get('length',50),'step_v':1},
+                        {'param':'size','label':'Spessore (px)','min_v':2,'max_v':100,'default_v':s_dict.get('size',15),'step_v':1},
+                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                    ]
+                elif stripe_orient_i == 'Cerchio':
+                    _params_meta = [
+                        {'param':'radius','label':'Raggio (%)','min_v':1,'max_v':100,'default_v':s_dict.get('radius',30),'step_v':1},
+                        {'param':'size','label':'Spessore bordo (px)','min_v':1,'max_v':50,'default_v':s_dict.get('size',8),'step_v':1},
+                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                    ]
+                if _params_meta:
+                    s_dict['keyframes'] = kf_expander_ui(i, dur, _params_meta)
 
             stripes.append(s_dict)
 
@@ -1547,3 +1557,4 @@ with c3:
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
             st.download_button("📄 SCARICA REPORT", r_txt,
                 file_name=f"{base}_report.txt")
+
