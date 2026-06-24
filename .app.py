@@ -20,6 +20,8 @@ if 'r_path'       not in st.session_state: st.session_state.r_path       = None
 if 'file_ts'      not in st.session_state: st.session_state.file_ts      = None
 if 'preset'       not in st.session_state: st.session_state.preset       = None
 if 'frame_export' not in st.session_state: st.session_state.frame_export = None
+if 'stripe_ids'   not in st.session_state: st.session_state.stripe_ids   = [0]
+if 'stripe_next_id' not in st.session_state: st.session_state.stripe_next_id = 1
 
 # --- PRESET GENERE ---
 GENRE_PRESETS = {
@@ -962,9 +964,29 @@ with c2:
 
         st.divider()
 
-        n_stripes = st.number_input("Numero di strisce", min_value=1, max_value=6, value=1, step=1)
-        for i in range(int(n_stripes)):
-            st.caption(f"Striscia {i+1}")
+        # --- Pulsanti aggiungi / gestione lista strisce ---
+        col_add, col_ninfo = st.columns([1, 2])
+        with col_add:
+            if st.button("➕ Aggiungi striscia", key="add_stripe"):
+                st.session_state.stripe_ids.append(st.session_state.stripe_next_id)
+                st.session_state.stripe_next_id += 1
+                st.rerun()
+        with col_ninfo:
+            st.caption(f"{len(st.session_state.stripe_ids)} striscia/e attive")
+
+        # Raccogliamo quale striscia eliminare (se richiesto)
+        _to_delete = None
+
+        for _loop_idx, i in enumerate(list(st.session_state.stripe_ids)):
+            col_title, col_del = st.columns([5, 1])
+            with col_title:
+                st.caption(f"Striscia {_loop_idx+1}")
+            with col_del:
+                if st.button("✕", key=f"del_stripe_{i}", help=f"Elimina striscia {_loop_idx+1}"):
+                    _to_delete = i
+
+            if _to_delete == i:
+                continue  # saltiamo il render di questa striscia
 
             # orientamento individuale sempre disponibile
             orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
@@ -1099,6 +1121,11 @@ with c2:
                 s_dict['opacity'] = st.slider(f"Opacità {i+1} (%)", 0, 100, 100, key=f"op_{i}") / 100.0
 
             stripes.append(s_dict)
+
+        # Applica l'eliminazione dopo aver renderizzato tutto
+        if _to_delete is not None:
+            st.session_state.stripe_ids.remove(_to_delete)
+            st.rerun()
 
         st.divider()
 
@@ -1237,6 +1264,11 @@ with c2:
                 try:
                     loaded = json.load(uploaded_preset)
                     st.session_state.preset = loaded
+                    # Ripristina gli ID strisce in base al numero salvato nel preset
+                    n_loaded = len(loaded.get("stripes", []))
+                    if n_loaded > 0:
+                        st.session_state.stripe_ids = list(range(n_loaded))
+                        st.session_state.stripe_next_id = n_loaded
                     st.success("Preset caricato — ricarica la pagina per applicarlo.")
                 except Exception as e:
                     st.error(f"Errore preset: {e}")
