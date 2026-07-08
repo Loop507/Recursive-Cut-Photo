@@ -962,40 +962,80 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     rhythm_on = beat_sync and not slideshow_mode and GENRE_PRESETS[genre]["rhythm"]
 
     slide_info = ""
+    slide_info_en = ""
     if slideshow_mode:
         slide_info = f"""
 * MODALITÀ: SLIDESHOW LENTO
 * Durata foto: {slide_hold}s | Transizione: {slide_trans}s
 * Tipo transizione: {slide_trans_type}
 * Sequenza: {'ORDINATA' if seq_mode else 'RANDOM'}"""
+        slide_info_en = f"""
+* MODE: SLOW SLIDESHOW
+* Photo duration: {slide_hold}s | Transition: {slide_trans}s
+* Transition type: {slide_trans_type}
+* Sequence: {'ORDERED' if seq_mode else 'RANDOM'}"""
 
     stripe_info = ""
+    stripe_info_en = ""
     if stripe_mode and stripes:
         bg_label = "Frame" if stripe_bg == "Calderone" else stripe_bg
         stripe_info = f"""
 * STRISCE SELETTIVE: {len(stripes)} striscia/e ({stripe_orientation})
 * Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
+        stripe_info_en = f"""
+* SELECTIVE STRIPES: {len(stripes)} stripe(s) ({stripe_orientation})
+* Background: {bg_label} | Stripe: {'GLITCHED' if stripe_glitch else 'ORIGINAL'}"""
+
+    has_masters = (up_m1 is not None) and (up_m2 is not None)
+    masters_line = f"\n* M1 sparisce a: {int(m1_end*100)}% | M2 appare a: {int(m2_start*100)}%" if has_masters else ""
+    masters_line_en = f"\n* M1 fades out at: {int(m1_end*100)}% | M2 appears at: {int(m2_start*100)}%" if has_masters else ""
 
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 :: MOTORE: recursive_cut_pro [v10.0 — keyframe]
 :: EFFETTO: Recursive Strand Shift
 :: ANALISI: RMS / Beat Sync / Rhythm Tracking
 :: PROCESSO: Frammentazione Ricorsiva
+
 "L'immagine e' stata smontata. Il codice ne ha riscritto la struttura."
 
-> TECHNICAL LOG SHEET:
+:: TECHNICAL LOG SHEET:
 * File: {base_name}
 * Asset Pool: {len(pool_imgs)} foto
 * Rendering: {total_f} frame @ {fps}fps
 * Geometria: {orientation} @ {strand_val}px
-* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
-* M1 sparisce a: {int(m1_end*100)}% | M2 appare a: {int(m2_start*100)}%
+* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps{masters_line}
 * Audio Peak: {audio_peak:.4f}
 * Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
 * Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
 
-> Regia e Algoritmo: Loop507
+:: Regia e Algoritmo: Loop507
+
+#glitchart #slicephoto #strandshift #digitalanatomy #signalcorruption #brutalistart
+#computationalminimalism #datadestruction #experimentalvideo
+
+────────────────────────────────────────
+
+[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
+:: ENGINE: recursive_cut_pro [v10.0 — keyframe]
+:: EFFECT: Recursive Strand Shift
+:: ANALYSIS: RMS / Beat Sync / Rhythm Tracking
+:: PROCESS: Recursive Fragmentation
+
+"The image has been disassembled. The code has rewritten its structure."
+
+:: TECHNICAL LOG SHEET:
+* File: {base_name}
+* Asset Pool: {len(pool_imgs)} photos
+* Rendering: {total_f} frames @ {fps}fps
+* Geometry: {orientation} @ {strand_val}px
+* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps{masters_line_en}
+* Audio Peak: {audio_peak:.4f}
+* Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
+* Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
+* Frame Sequence: {'ORDERED' if seq_mode else 'RANDOM'}{slide_info_en}{stripe_info_en}
+
+:: Direction & Algorithm: Loop507
 
 #glitchart #slicephoto #strandshift #digitalanatomy #signalcorruption #brutalistart
 #computationalminimalism #datadestruction #experimentalvideo"""
