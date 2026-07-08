@@ -114,7 +114,6 @@ def kf_expander_ui(stripe_id, dur, params_meta):
                 kf_state[sel_param].append({'t': round(float(new_t), 2), 'v': round(float(new_v), 4)})
                 kf_state[sel_param].sort(key=lambda k: k['t'])
                 st.session_state[state_key] = kf_state
-                st.rerun()
 
         all_kfs = [(p, ki, kf) for p, lst in kf_state.items() for ki, kf in enumerate(lst)]
         all_kfs.sort(key=lambda x: x[2]['t'])
@@ -135,7 +134,6 @@ def kf_expander_ui(stripe_id, dur, params_meta):
                 p, ki = to_del
                 kf_state[p].pop(ki)
                 st.session_state[state_key] = kf_state
-                st.rerun()
         else:
             st.caption("\u2014 Nessun KF: la striscia usa i valori degli slider per tutta la durata.")
 
@@ -1097,7 +1095,6 @@ with c2:
             if st.button("➕ Aggiungi striscia", key="add_stripe"):
                 st.session_state.stripe_ids.append(st.session_state.stripe_next_id)
                 st.session_state.stripe_next_id += 1
-                st.rerun()
         with col_ninfo:
             st.caption(f"{len(st.session_state.stripe_ids)} striscia/e attive")
 
@@ -1123,15 +1120,19 @@ with c2:
 
                 # Forma
                 orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
-                if stripe_orientation == "Mix H+V":
-                    orient_default = 0
-                elif stripe_orientation in orient_opts:
-                    orient_default = orient_opts.index(stripe_orientation)
-                else:
-                    orient_default = 0
+                if f"so_{i}" not in st.session_state:
+                    # Default assegnato UNA SOLA VOLTA alla creazione della striscia:
+                    # le modifiche successive al toggle globale "Orientamento strisce"
+                    # non devono più toccare strisce già esistenti.
+                    if stripe_orientation == "Mix H+V":
+                        st.session_state[f"so_{i}"] = "Orizzontale" if _loop_idx % 2 == 0 else "Verticale"
+                    elif stripe_orientation in orient_opts:
+                        st.session_state[f"so_{i}"] = stripe_orientation
+                    else:
+                        st.session_state[f"so_{i}"] = "Orizzontale"
                 stripe_orient_i = st.radio(
                     "Forma", orient_opts,
-                    index=orient_default, horizontal=True, key=f"so_{i}")
+                    horizontal=True, key=f"so_{i}")
 
                 s_dict = {
                     'orientation':   stripe_orient_i,
