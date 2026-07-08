@@ -1029,6 +1029,9 @@ with c1:
     st.divider()
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
 
+    st.divider()
+    stripe_preview_slot = st.container()
+
 with c2:
     st.subheader("✂️ Controllo")
 
@@ -1111,7 +1114,7 @@ with c2:
             _kf_tag = f" · {_kf_count} KF" if _kf_count else ""
             _exp_title = f"Striscia {_loop_idx+1} — {_cur_orient}{_kf_tag}"
 
-            with st.expander(_exp_title, expanded=(_loop_idx == 0)):
+            with st.expander(_exp_title, expanded=(_loop_idx == 0), key=f"exp_stripe_{i}"):
 
                 # Pulsante elimina in cima all'expander
                 if st.button(f"🗑️ Elimina striscia {_loop_idx+1}", key=f"del_stripe_{i}"):
@@ -1291,20 +1294,22 @@ with c2:
 
         st.divider()
 
-        # --- ANTEPRIMA ---
+        # --- ANTEPRIMA (renderizzata a sinistra, sotto "Carica audio") ---
         prev_choices = []
         prev_files   = {}
         if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
         if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
         if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
 
-        if prev_choices:
-            prev_sel = st.selectbox("🔍 Anteprima su", prev_choices)
+        with stripe_preview_slot:
+         st.caption("🔍 Anteprima strisce")
+         if prev_choices:
+            prev_sel = st.selectbox("Anteprima su", prev_choices, label_visibility="collapsed")
             pf = prev_files[prev_sel]
             pf.seek(0)
             prev_img   = np.array(Image.open(pf).convert("RGB"))
             ph, pw     = prev_img.shape[:2]
-            scale      = 300 / max(ph, pw)
+            scale      = 160 / max(ph, pw)
             dw, dh     = int(pw * scale), int(ph * scale)
             prev_small = cv2.resize(prev_img, (dw, dh))
             overlay    = prev_small.copy()
@@ -1384,8 +1389,8 @@ with c2:
             caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
             if stripe_reverse:
                 caption += " · REVERSE ON"
-            st.image(overlay, caption=caption, use_container_width=False)
-        else:
+            st.image(overlay, caption=caption, use_container_width=True)
+         else:
             st.caption("Carica almeno una foto per vedere l'anteprima.")
 
         st.divider()
@@ -1557,4 +1562,3 @@ with c3:
             st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
             st.download_button("📄 SCARICA REPORT", r_txt,
                 file_name=f"{base}_report.txt")
-
