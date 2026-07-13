@@ -642,18 +642,22 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             sensitivity = onset_sensitivity if onset_sensitivity is not None else (op / 100.0)
             if sensitivity > 0:
                 onset_env_raw = librosa.onset.onset_strength(y=y, sr=sr)
+                onset_env_norm = onset_env_raw / (onset_env_raw.max() + 1e-6)
                 # delta più basso = più sensibile (intercetta più transienti, anche deboli)
                 delta = 0.6 * (1.0 - sensitivity) + 0.02
-                onset_frames = librosa.onset.onset_detect(
-                    y=y, sr=sr, onset_envelope=onset_env_raw,
-                    backtrack=True, delta=delta
+                # frame del PICCO (per leggere l'intensità reale del transiente)
+                onset_frames_peak = librosa.onset.onset_detect(
+                    onset_envelope=onset_env_norm, sr=sr, backtrack=False, delta=delta
                 )
-                onset_times = librosa.frames_to_time(onset_frames, sr=sr)
-                peak = float(onset_env_raw.max() + 1e-6)
-                for of_frame, ot in zip(onset_frames, onset_times):
+                # frame dell'ATTACCO reale (per il timing preciso del taglio)
+                onset_frames_bt = librosa.onset.onset_detect(
+                    onset_envelope=onset_env_norm, sr=sr, backtrack=True, delta=delta
+                )
+                onset_times = librosa.frames_to_time(onset_frames_bt, sr=sr)
+                for peak_frame, ot in zip(onset_frames_peak, onset_times):
                     of = int(ot * fps)
                     if of < total_f:
-                        strength = float(onset_env_raw[of_frame] / peak)
+                        strength = float(onset_env_norm[peak_frame])
                         onset_envelope[of] = max(onset_envelope[of], strength)
 
         if rhythm_tracking:
@@ -826,7 +830,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     def pick():
                         interval = max(1, int(fps / photo_speed))
                         key = f // interval
-                        force = onset_envelope[f] > 0 and random.random() < (bc / 100.0) if beat_sync else False
+                        force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
                         if key in cached_picks and not force and random.random() > 0.1:
                             return cached_picks[key]
                         idx = (key % len(pool_imgs)) if seq_mode else None
@@ -841,7 +845,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         speed_mod = photo_speed
                     interval = max(1, int(fps / speed_mod))
                     key = f // interval
-                    force = onset_envelope[f] > 0 and beat_sync and random.random() < (bc / 100.0) if beat_sync else False
+                    force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
                     if key in cached_picks and not force and random.random() > 0.1:
                         return cached_picks[key]
                     idx = (key % len(pool_imgs)) if seq_mode else None
@@ -1523,6 +1527,25 @@ with c3:
             horizontal=True, help="Se il detect sbaglia (es. tracce con poca batteria), scrivi tu il BPM.")
         if bpm_mode == "Inserisci manualmente":
             manual_bpm = st.number_input("BPM", min_value=40, max_value=220, value=120, step=1)
+        else:
+            if up_a is not None:
+                bpm_cache_key = f"{up_a.name}_{up_a.size}"
+                if st.session_state.get("bpm_preview_key") != bpm_cache_key:
+                    with st.spinner("🎯 Rilevo BPM in automatico..."):
+                        up_a.seek(0)
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t_bpm:
+                            t_bpm.write(up_a.read())
+                            bpm_preview_path = t_bpm.name
+                        up_a.seek(0)  # riporto il puntatore a inizio file per la generazione finale
+                        y_bpm, sr_bpm = librosa.load(bpm_preview_path, sr=22050, mono=True, duration=60)
+                        tempo_bpm, _ = librosa.beat.beat_track(y=y_bpm, sr=sr_bpm)
+                        tempo_bpm = float(tempo_bpm) if np.isscalar(tempo_bpm) else float(tempo_bpm[0])
+                        st.session_state["bpm_preview"] = tempo_bpm
+                        st.session_state["bpm_preview_key"] = bpm_cache_key
+                        os.remove(bpm_preview_path)
+                st.info(f"🎯 BPM rilevato automaticamente: **{st.session_state['bpm_preview']:.1f}**")
+            else:
+                st.caption("Carica un audio per rilevare il BPM.")
 
         onset_sensitivity = st.slider(
             "🎚️ Sensibilità Onset", 0.0, 1.0, GENRE_PRESETS[genre]["onset"] / 100.0, step=0.05,
