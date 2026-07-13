@@ -422,7 +422,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             base_len = base_len * (0.2 + 0.8 * audio_envelope_val)
         base_len = np.clip(base_len, 1.0, 100.0)
         length_offset = s.get('offset_length', 50.0)
-        if s.get('move_random', False):
+        if s.get('move_random', False) or s.get('beat_react', False):
             length_offset = offset
         chroma_amt = int(s.get('chroma_amount', 6))
         blend_mode = s.get('blend_mode', 'Normal')
@@ -447,8 +447,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         if s_orient == "Lancetta":
             # angolo base + rotazione automatica nel tempo (offset usato come angolo corrente)
             angle = kf_get(s, 'angle', t, total_dur, s.get('angle', 90.0))
-            if s.get('auto_rotate', False):
-                angle = offset  # offset precomputato come angolo corrente
+            if s.get('auto_rotate', False) or s.get('beat_react', False):
+                angle = offset  # offset precomputato: rotazione continua o scatto sul beat
             length_pct = kf_get(s, 'length', t, total_dur, s.get('length', 50.0))
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
@@ -463,8 +463,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             radius = kf_get(s, 'radius', t, total_dur, s.get('radius', 30.0))
             if s.get('length_audio', False):
                 radius = radius * (0.2 + 0.8 * audio_envelope_val)
-            if s.get('auto_expand', False):
-                radius = offset  # offset precomputato come raggio crescente
+            if s.get('auto_expand', False) or s.get('beat_react', False):
+                radius = offset  # offset precomputato: espansione continua o scatto sul beat
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             draw_cerchio(out, src_stripe, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
@@ -474,7 +474,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
 
         elif s_orient == "Striscia Ruotata":
             angle = kf_get(s, 'angle', t, total_dur, s.get('angle', 0.0))
-            if s.get('auto_rotate', False):
+            if s.get('auto_rotate', False) or s.get('beat_react', False):
                 angle = offset
             length_pct = kf_get(s, 'length', t, total_dur, s.get('length', 100.0))
             if s.get('length_audio', False):
@@ -657,33 +657,66 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         beat_mult = 1.0 + beat_envelope * 3.0 + onset_envelope * 2.0
         warped_t = np.cumsum(beat_mult) * dt
 
+        # scatto autonomo: ad ogni beat/onset la traiettoria "salta" invece di scorrere
+        _trigger = (beat_envelope >= 0.999) | (onset_envelope > 0)
+        _trigger_idx = np.cumsum(_trigger.astype(int))
+        _pulse_sign = np.where(_trigger_idx % 2 == 0, 1.0, -1.0)
+        _pulse_amt_raw = np.maximum(beat_envelope, onset_envelope)  # 0-1
+
+        def _beat_pulse(base_val, amp, wrap=False, lo=0.0, hi=100.0):
+            delta = _pulse_sign * _pulse_amt_raw * amp
+            if wrap:
+                return (base_val + delta) % hi
+            return np.clip(base_val + delta, lo, hi)
+
         for s in stripes:
             s_orient = s.get('orientation', stripe_orientation)
             react = bool(s.get('beat_react', False)) and beat_sync and not slideshow_mode
             base_t = warped_t if react else t_arr
 
-            if s_orient in ["Lancetta", "Striscia Ruotata"] and s.get('auto_rotate', False):
-                # rotazione continua: angolo cresce nel tempo (reale o "a tempo" se beat_react)
-                spd = s.get('rotate_speed', 30.0)  # gradi/secondo
+            if s_orient in ["Lancetta", "Striscia Ruotata"]:
                 start_angle = s.get('angle', 90.0)
-                traj = (start_angle + spd * base_t) % 360.0
+                if s.get('auto_rotate', False):
+                    # rotazione continua: angolo cresce nel tempo (reale o "a tempo" se beat_react)
+                    spd = s.get('rotate_speed', 30.0)  # gradi/secondo
+                    traj = (start_angle + spd * base_t) % 360.0
+                elif react:
+                    # autonomo: scatta d'angolo sui beat/onset, senza bisogno di rotazione automatica
+                    traj = _beat_pulse(start_angle, amp=45.0, wrap=True, hi=360.0)
+                else:
+                    traj = np.full(total_f, 50.0)
                 stripe_offsets_t.append(traj)
 
-            elif s_orient == "Cerchio" and s.get('auto_expand', False):
-                # espansione ciclica: raggio cresce da 0 a 100 e riparte
-                spd = s.get('expand_speed', 20.0)  # % al secondo
-                traj = (spd * base_t) % 100.0
+            elif s_orient == "Cerchio":
+                base_radius = s.get('radius', 30.0)
+                if s.get('auto_expand', False):
+                    # espansione ciclica: raggio cresce da 0 a 100 e riparte
+                    spd = s.get('expand_speed', 20.0)  # % al secondo
+                    traj = (spd * base_t) % 100.0
+                elif react:
+                    # autonomo: scatta di raggio sui beat/onset, senza bisogno di espansione ciclica
+                    traj = _beat_pulse(base_radius, amp=30.0, lo=1.0, hi=100.0)
+                else:
+                    traj = np.full(total_f, 50.0)
                 stripe_offsets_t.append(traj)
 
-            elif s.get('move_random', False):
-                spd = max(0.1, s.get('move_speed', 1.0))
-                freq1 = spd * rng.uniform(0.1, 0.3)
-                freq2 = spd * rng.uniform(0.05, 0.15)
-                phase1, phase2 = rng.uniform(0, np.pi*2, 2)
-                traj = (np.sin(2*np.pi*freq1*base_t + phase1) * 0.5 +
-                        np.sin(2*np.pi*freq2*base_t + phase2) * 0.5)
-                traj = (traj + 1) / 2 * 80 + 10
+            elif s_orient in ("Orizzontale", "Verticale"):
+                base_offset = s.get('offset_length', 50.0)
+                if s.get('move_random', False):
+                    spd = max(0.1, s.get('move_speed', 1.0))
+                    freq1 = spd * rng.uniform(0.1, 0.3)
+                    freq2 = spd * rng.uniform(0.05, 0.15)
+                    phase1, phase2 = rng.uniform(0, np.pi*2, 2)
+                    traj = (np.sin(2*np.pi*freq1*base_t + phase1) * 0.5 +
+                            np.sin(2*np.pi*freq2*base_t + phase2) * 0.5)
+                    traj = (traj + 1) / 2 * 80 + 10
+                elif react:
+                    # autonomo: la striscia scatta sui beat/onset, senza bisogno di movimento random
+                    traj = _beat_pulse(base_offset, amp=35.0, lo=0.0, hi=100.0)
+                else:
+                    traj = np.full(total_f, 50.0)
                 stripe_offsets_t.append(traj)
+
             else:
                 stripe_offsets_t.append(np.full(total_f, 50.0))
 
@@ -1202,8 +1235,8 @@ with c2:
                     s_dict['move_speed'] = 1.0
                     if s_dict['move_random']:
                         s_dict['move_speed'] = st.slider("Velocità movimento", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
-                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"mbr_{i}",
-                            help="Il movimento accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
+                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"mbr_{i}",
+                        help="Autonomo: la striscia scatta sui beat/onset rilevati anche senza 'Movimento random'. Se entrambi attivi, il movimento random accelera sul beat invece di scattare.")
                     s_dict['offset_length'] = float(st.slider("Offset dx/sx (%)", 0, 100, 50, key=f"oc_{i}"))
 
                 elif stripe_orient_i == "Striscia Ruotata":
@@ -1229,8 +1262,8 @@ with c2:
                     s_dict['rotate_speed'] = 30.0
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
-                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"rbr_{i}",
-                            help="La rotazione accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
+                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"rbr_{i}",
+                        help="Autonomo: la striscia scatta d'angolo sui beat/onset rilevati anche senza 'Rotazione automatica'. Se entrambe attive, la rotazione accelera sul beat invece di scattare.")
 
                 elif stripe_orient_i == "Lancetta":
                     col_cx, col_cy = st.columns(2)
@@ -1254,8 +1287,8 @@ with c2:
                     s_dict['rotate_speed'] = 30.0
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
-                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"lbr_{i}",
-                            help="La rotazione accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
+                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"lbr_{i}",
+                        help="Autonomo: la lancetta scatta d'angolo sui beat/onset rilevati anche senza 'Rotazione automatica'. Se entrambe attive, la rotazione accelera sul beat invece di scattare.")
 
                 elif stripe_orient_i == "Cerchio":
                     col_cx, col_cy = st.columns(2)
@@ -1281,8 +1314,8 @@ with c2:
                     s_dict['expand_speed'] = 20.0
                     if s_dict.get('auto_expand'):
                         s_dict['expand_speed'] = st.slider("Velocità espansione (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
-                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"cbr_{i}",
-                            help="L'espansione accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
+                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"cbr_{i}",
+                        help="Autonomo: il cerchio scatta di raggio sui beat/onset rilevati anche senza 'Espansione ciclica'. Se entrambe attive, l'espansione accelera sul beat invece di scattare.")
 
                 st.divider()
 
