@@ -549,38 +549,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             stripe_bg_static = cv2.resize(_bg_raw, (w, h))
         # "Calderone" → stripe_bg_static rimane None, si usa pick() a runtime
 
-    # --- precomputo traiettorie per ogni striscia ---
+    # --- traiettorie strisce: calcolate dopo l'analisi audio (vedi sotto), così possono reagire al beat ---
     stripe_offsets_t = []
-    if stripe_mode and stripes:
-        rng = np.random.default_rng(42)
-        t_arr = np.linspace(0, max_limit, total_f)
-        for s in stripes:
-            s_orient = s.get('orientation', stripe_orientation)
-
-            if s_orient in ["Lancetta", "Striscia Ruotata"] and s.get('auto_rotate', False):
-                # rotazione continua: angolo cresce linearmente nel tempo
-                spd = s.get('rotate_speed', 30.0)  # gradi/secondo
-                start_angle = s.get('angle', 90.0)
-                traj = (start_angle + spd * t_arr) % 360.0
-                stripe_offsets_t.append(traj)
-
-            elif s_orient == "Cerchio" and s.get('auto_expand', False):
-                # espansione ciclica: raggio cresce da 0 a 100 e riparte
-                spd = s.get('expand_speed', 20.0)  # % al secondo
-                traj = (spd * t_arr) % 100.0
-                stripe_offsets_t.append(traj)
-
-            elif s.get('move_random', False):
-                spd = max(0.1, s.get('move_speed', 1.0))
-                freq1 = spd * rng.uniform(0.1, 0.3)
-                freq2 = spd * rng.uniform(0.05, 0.15)
-                phase1, phase2 = rng.uniform(0, np.pi*2, 2)
-                traj = (np.sin(2*np.pi*freq1*t_arr + phase1) * 0.5 +
-                        np.sin(2*np.pi*freq2*t_arr + phase2) * 0.5)
-                traj = (traj + 1) / 2 * 80 + 10
-                stripe_offsets_t.append(traj)
-            else:
-                stripe_offsets_t.append(np.full(total_f, 50.0))
 
     # --- AUDIO ANALYSIS ---
     audio_envelope  = np.ones(total_f)
@@ -677,6 +647,46 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             kernel = np.ones(fps // 2) / (fps // 2)
             rhythm_envelope = np.convolve(rhythm_envelope, kernel, mode='same')
             rhythm_envelope = np.clip(rhythm_envelope / (rhythm_envelope.max() + 1e-6), 0.0, 1.0)
+
+    # --- traiettorie strisce (ora che beat_envelope/onset_envelope esistono) ---
+    if stripe_mode and stripes:
+        rng = np.random.default_rng(42)
+        t_arr = np.linspace(0, max_limit, total_f)
+        dt = 1.0 / fps
+        # tempo "deformato": accelera sui beat/onset invece di scorrere costante
+        beat_mult = 1.0 + beat_envelope * 3.0 + onset_envelope * 2.0
+        warped_t = np.cumsum(beat_mult) * dt
+
+        for s in stripes:
+            s_orient = s.get('orientation', stripe_orientation)
+            react = bool(s.get('beat_react', False)) and beat_sync and not slideshow_mode
+            base_t = warped_t if react else t_arr
+
+            if s_orient in ["Lancetta", "Striscia Ruotata"] and s.get('auto_rotate', False):
+                # rotazione continua: angolo cresce nel tempo (reale o "a tempo" se beat_react)
+                spd = s.get('rotate_speed', 30.0)  # gradi/secondo
+                start_angle = s.get('angle', 90.0)
+                traj = (start_angle + spd * base_t) % 360.0
+                stripe_offsets_t.append(traj)
+
+            elif s_orient == "Cerchio" and s.get('auto_expand', False):
+                # espansione ciclica: raggio cresce da 0 a 100 e riparte
+                spd = s.get('expand_speed', 20.0)  # % al secondo
+                traj = (spd * base_t) % 100.0
+                stripe_offsets_t.append(traj)
+
+            elif s.get('move_random', False):
+                spd = max(0.1, s.get('move_speed', 1.0))
+                freq1 = spd * rng.uniform(0.1, 0.3)
+                freq2 = spd * rng.uniform(0.05, 0.15)
+                phase1, phase2 = rng.uniform(0, np.pi*2, 2)
+                traj = (np.sin(2*np.pi*freq1*base_t + phase1) * 0.5 +
+                        np.sin(2*np.pi*freq2*base_t + phase2) * 0.5)
+                traj = (traj + 1) / 2 * 80 + 10
+                stripe_offsets_t.append(traj)
+            else:
+                stripe_offsets_t.append(np.full(total_f, 50.0))
+
 
     # --- CACHE ---
     MAX_CACHE = 400
@@ -1192,6 +1202,8 @@ with c2:
                     s_dict['move_speed'] = 1.0
                     if s_dict['move_random']:
                         s_dict['move_speed'] = st.slider("Velocità movimento", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"mbr_{i}",
+                            help="Il movimento accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
                     s_dict['offset_length'] = float(st.slider("Offset dx/sx (%)", 0, 100, 50, key=f"oc_{i}"))
 
                 elif stripe_orient_i == "Striscia Ruotata":
@@ -1217,6 +1229,8 @@ with c2:
                     s_dict['rotate_speed'] = 30.0
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"rbr_{i}",
+                            help="La rotazione accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
 
                 elif stripe_orient_i == "Lancetta":
                     col_cx, col_cy = st.columns(2)
@@ -1240,6 +1254,8 @@ with c2:
                     s_dict['rotate_speed'] = 30.0
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"lbr_{i}",
+                            help="La rotazione accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
 
                 elif stripe_orient_i == "Cerchio":
                     col_cx, col_cy = st.columns(2)
@@ -1265,6 +1281,8 @@ with c2:
                     s_dict['expand_speed'] = 20.0
                     if s_dict.get('auto_expand'):
                         s_dict['expand_speed'] = st.slider("Velocità espansione (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"cbr_{i}",
+                            help="L'espansione accelera sui beat/onset rilevati invece di essere costante (richiede 'A tempo di musica' attivo).")
 
                 st.divider()
 
