@@ -33,6 +33,33 @@ GENRE_PRESETS = {
     "Hip Hop / Jazz":  {"beat_strength": 60, "beat_decay": 35, "onset": 50, "cache": 30, "rhythm": False},
 }
 
+# Config condivisa per le strisce con moto "a rampa" (angolo/raggio che cresce nel tempo o
+# scatta sul beat). Orizzontale/Verticale non è qui perché il suo moto automatico è un'oscillazione
+# sinusoidale, non una rampa, e vive nel proprio ramo in generate_master.
+STRIPE_MOTION_CONFIG = {
+    "Lancetta":         dict(auto_key="auto_rotate", speed_key="rotate_speed", speed_default=30.0,
+                             base_key="angle", base_default=90.0, wrap_hi=360.0,
+                             add_base_to_ramp=True, pulse_amp=45.0, pulse_wrap=True),
+    "Striscia Ruotata": dict(auto_key="auto_rotate", speed_key="rotate_speed", speed_default=30.0,
+                             base_key="angle", base_default=0.0, wrap_hi=360.0,
+                             add_base_to_ramp=True, pulse_amp=45.0, pulse_wrap=True),
+    "Cerchio":          dict(auto_key="auto_expand", speed_key="expand_speed", speed_default=20.0,
+                             base_key="radius", base_default=30.0, wrap_hi=100.0,
+                             add_base_to_ramp=False, pulse_amp=30.0, pulse_wrap=False,
+                             pulse_lo=1.0, pulse_hi=100.0),
+}
+
+
+def resolve_reactive_val(s_dict, base_val, offset, auto_key):
+    """
+    Sceglie tra valore statico (base_val) e offset animato (rampa continua o scatto sul beat),
+    a seconda che 'auto_key' (es. auto_rotate/auto_expand/move_random) o 'beat_react' sia attivo
+    per questa striscia. Usato per tenere allineati calcolo-traiettoria e disegno.
+    """
+    if s_dict.get(auto_key, False) or s_dict.get('beat_react', False):
+        return offset
+    return base_val
+
 # =====================================================================
 # KEYFRAME INTERPOLATION
 # =====================================================================
@@ -421,9 +448,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         if s.get('length_audio', False):
             base_len = base_len * (0.2 + 0.8 * audio_envelope_val)
         base_len = np.clip(base_len, 1.0, 100.0)
-        length_offset = s.get('offset_length', 50.0)
-        if s.get('move_random', False) or s.get('beat_react', False):
-            length_offset = offset
+        length_offset = resolve_reactive_val(s, s.get('offset_length', 50.0), offset, 'move_random')
         chroma_amt = int(s.get('chroma_amount', 6))
         blend_mode = s.get('blend_mode', 'Normal')
         opacity    = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
@@ -446,9 +471,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
 
         if s_orient == "Lancetta":
             # angolo base + rotazione automatica nel tempo (offset usato come angolo corrente)
-            angle = kf_get(s, 'angle', t, total_dur, s.get('angle', 90.0))
-            if s.get('auto_rotate', False) or s.get('beat_react', False):
-                angle = offset  # offset precomputato: rotazione continua o scatto sul beat
+            angle_base = kf_get(s, 'angle', t, total_dur, s.get('angle', 90.0))
+            angle = resolve_reactive_val(s, angle_base, offset, 'auto_rotate')
             length_pct = kf_get(s, 'length', t, total_dur, s.get('length', 50.0))
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
@@ -463,8 +487,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             radius = kf_get(s, 'radius', t, total_dur, s.get('radius', 30.0))
             if s.get('length_audio', False):
                 radius = radius * (0.2 + 0.8 * audio_envelope_val)
-            if s.get('auto_expand', False) or s.get('beat_react', False):
-                radius = offset  # offset precomputato: espansione continua o scatto sul beat
+            radius = resolve_reactive_val(s, radius, offset, 'auto_expand')
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             draw_cerchio(out, src_stripe, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
@@ -473,9 +496,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                          chroma_on, chroma_amt, mode, opacity)
 
         elif s_orient == "Striscia Ruotata":
-            angle = kf_get(s, 'angle', t, total_dur, s.get('angle', 0.0))
-            if s.get('auto_rotate', False) or s.get('beat_react', False):
-                angle = offset
+            angle_base = kf_get(s, 'angle', t, total_dur, s.get('angle', 0.0))
+            angle = resolve_reactive_val(s, angle_base, offset, 'auto_rotate')
             length_pct = kf_get(s, 'length', t, total_dur, s.get('length', 100.0))
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
@@ -669,35 +691,28 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 return (base_val + delta) % hi
             return np.clip(base_val + delta, lo, hi)
 
+        def _ramp_or_pulse(s, cfg, base_t, react):
+            """Rampa continua (auto_key ON) oppure scatto sul beat (react ON, auto_key OFF)."""
+            base_val = s.get(cfg["base_key"], cfg["base_default"])
+            if s.get(cfg["auto_key"], False):
+                spd = s.get(cfg["speed_key"], cfg["speed_default"])
+                ramp = spd * base_t
+                if cfg["add_base_to_ramp"]:
+                    ramp = base_val + ramp
+                return ramp % cfg["wrap_hi"]
+            elif react:
+                return _beat_pulse(base_val, amp=cfg["pulse_amp"], wrap=cfg["pulse_wrap"],
+                                    lo=cfg.get("pulse_lo", 0.0), hi=cfg.get("pulse_hi", cfg["wrap_hi"]))
+            else:
+                return np.full(total_f, 50.0)
+
         for s in stripes:
             s_orient = s.get('orientation', stripe_orientation)
             react = bool(s.get('beat_react', False)) and beat_sync and not slideshow_mode
             base_t = warped_t if react else t_arr
 
-            if s_orient in ["Lancetta", "Striscia Ruotata"]:
-                start_angle = s.get('angle', 90.0)
-                if s.get('auto_rotate', False):
-                    # rotazione continua: angolo cresce nel tempo (reale o "a tempo" se beat_react)
-                    spd = s.get('rotate_speed', 30.0)  # gradi/secondo
-                    traj = (start_angle + spd * base_t) % 360.0
-                elif react:
-                    # autonomo: scatta d'angolo sui beat/onset, senza bisogno di rotazione automatica
-                    traj = _beat_pulse(start_angle, amp=45.0, wrap=True, hi=360.0)
-                else:
-                    traj = np.full(total_f, 50.0)
-                stripe_offsets_t.append(traj)
-
-            elif s_orient == "Cerchio":
-                base_radius = s.get('radius', 30.0)
-                if s.get('auto_expand', False):
-                    # espansione ciclica: raggio cresce da 0 a 100 e riparte
-                    spd = s.get('expand_speed', 20.0)  # % al secondo
-                    traj = (spd * base_t) % 100.0
-                elif react:
-                    # autonomo: scatta di raggio sui beat/onset, senza bisogno di espansione ciclica
-                    traj = _beat_pulse(base_radius, amp=30.0, lo=1.0, hi=100.0)
-                else:
-                    traj = np.full(total_f, 50.0)
+            if s_orient in STRIPE_MOTION_CONFIG:
+                traj = _ramp_or_pulse(s, STRIPE_MOTION_CONFIG[s_orient], base_t, react)
                 stripe_offsets_t.append(traj)
 
             elif s_orient in ("Orizzontale", "Verticale"):
