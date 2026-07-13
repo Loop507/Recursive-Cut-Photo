@@ -587,7 +587,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             bc = p["cache"]
             rhythm_tracking = p["rhythm"]
 
-            if bs > 0:
+            if bs > 0 or manual_bpm:
                 if manual_bpm:
                     # --- GRIGLIA BPM MANUALE ---
                     detected_bpm = float(manual_bpm)
