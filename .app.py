@@ -505,7 +505,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     stripe_bg="Master 1", stripe_glitch=False, stripe_reverse=False,
                     stripe_chroma=False, stripe_flash=False,
                     global_chroma=False, global_chroma_amt=6,
-                    global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100):
+                    global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
+                    manual_bpm=None, onset_sensitivity=None):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -591,6 +592,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     temp_aud_path   = None
     bs, bd, op, bc  = 0, 50, 0, 30
     rhythm_tracking = False
+    detected_bpm    = 0.0
+    bpm_source      = "N/A"
 
     if up_aud:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t:
@@ -615,8 +618,19 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             rhythm_tracking = p["rhythm"]
 
             if bs > 0:
-                _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-                beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+                if manual_bpm:
+                    # --- GRIGLIA BPM MANUALE ---
+                    detected_bpm = float(manual_bpm)
+                    bpm_source = "MANUALE"
+                    step = 60.0 / detected_bpm
+                    beat_times = np.arange(0, len(y) / sr, step)
+                else:
+                    # --- BPM AUTO-DETECT ---
+                    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+                    detected_bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
+                    bpm_source = "AUTO"
+                    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+
                 beat_count = len(beat_times)
                 decay_rate = 1.0 - (bd / 100.0) * 0.98
                 for bt in beat_times:
@@ -624,12 +638,23 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     for df in range(min(int(fps * 0.5), total_f - bf)):
                         beat_envelope[bf + df] = max(beat_envelope[bf + df], decay_rate ** df)
 
-            if op > 0:
-                onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
-                for ot in librosa.frames_to_time(onset_frames, sr=sr):
+            # --- ONSET DETECTION (ogni transiente, indipendente dal tempo) ---
+            sensitivity = onset_sensitivity if onset_sensitivity is not None else (op / 100.0)
+            if sensitivity > 0:
+                onset_env_raw = librosa.onset.onset_strength(y=y, sr=sr)
+                # delta più basso = più sensibile (intercetta più transienti, anche deboli)
+                delta = 0.6 * (1.0 - sensitivity) + 0.02
+                onset_frames = librosa.onset.onset_detect(
+                    y=y, sr=sr, onset_envelope=onset_env_raw,
+                    backtrack=True, delta=delta
+                )
+                onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+                peak = float(onset_env_raw.max() + 1e-6)
+                for of_frame, ot in zip(onset_frames, onset_times):
                     of = int(ot * fps)
                     if of < total_f:
-                        onset_envelope[of] = 1.0
+                        strength = float(onset_env_raw[of_frame] / peak)
+                        onset_envelope[of] = max(onset_envelope[of], strength)
 
         if rhythm_tracking:
             tempogram = librosa.feature.tempogram(y=y, sr=sr)
@@ -962,80 +987,42 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     rhythm_on = beat_sync and not slideshow_mode and GENRE_PRESETS[genre]["rhythm"]
 
     slide_info = ""
-    slide_info_en = ""
     if slideshow_mode:
         slide_info = f"""
 * MODALITÀ: SLIDESHOW LENTO
 * Durata foto: {slide_hold}s | Transizione: {slide_trans}s
 * Tipo transizione: {slide_trans_type}
 * Sequenza: {'ORDINATA' if seq_mode else 'RANDOM'}"""
-        slide_info_en = f"""
-* MODE: SLOW SLIDESHOW
-* Photo duration: {slide_hold}s | Transition: {slide_trans}s
-* Transition type: {slide_trans_type}
-* Sequence: {'ORDERED' if seq_mode else 'RANDOM'}"""
 
     stripe_info = ""
-    stripe_info_en = ""
     if stripe_mode and stripes:
         bg_label = "Frame" if stripe_bg == "Calderone" else stripe_bg
         stripe_info = f"""
 * STRISCE SELETTIVE: {len(stripes)} striscia/e ({stripe_orientation})
 * Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
-        stripe_info_en = f"""
-* SELECTIVE STRIPES: {len(stripes)} stripe(s) ({stripe_orientation})
-* Background: {bg_label} | Stripe: {'GLITCHED' if stripe_glitch else 'ORIGINAL'}"""
-
-    has_masters = (up_m1 is not None) and (up_m2 is not None)
-    masters_line = f"\n* M1 sparisce a: {int(m1_end*100)}% | M2 appare a: {int(m2_start*100)}%" if has_masters else ""
-    masters_line_en = f"\n* M1 fades out at: {int(m1_end*100)}% | M2 appears at: {int(m2_start*100)}%" if has_masters else ""
 
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 :: MOTORE: recursive_cut_pro [v10.0 — keyframe]
 :: EFFETTO: Recursive Strand Shift
 :: ANALISI: RMS / Beat Sync / Rhythm Tracking
 :: PROCESSO: Frammentazione Ricorsiva
-
 "L'immagine e' stata smontata. Il codice ne ha riscritto la struttura."
 
-:: TECHNICAL LOG SHEET:
+> TECHNICAL LOG SHEET:
 * File: {base_name}
 * Asset Pool: {len(pool_imgs)} foto
 * Rendering: {total_f} frame @ {fps}fps
 * Geometria: {orientation} @ {strand_val}px
-* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps{masters_line}
+* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
+* M1 sparisce a: {int(m1_end*100)}% | M2 appare a: {int(m2_start*100)}%
 * Audio Peak: {audio_peak:.4f}
 * Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
+* BPM: {f'{detected_bpm:.1f} ({bpm_source})' if beat_sync and not slideshow_mode and detected_bpm > 0 else 'N/A'}
+* Onset Sensitivity: {f'{int(onset_sensitivity*100)}%' if beat_sync and not slideshow_mode and onset_sensitivity is not None else 'N/A (preset)'}
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
 * Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
 
-:: Regia e Algoritmo: Loop507
-
-#glitchart #slicephoto #strandshift #digitalanatomy #signalcorruption #brutalistart
-#computationalminimalism #datadestruction #experimentalvideo
-
-────────────────────────────────────────
-
-[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
-:: ENGINE: recursive_cut_pro [v10.0 — keyframe]
-:: EFFECT: Recursive Strand Shift
-:: ANALYSIS: RMS / Beat Sync / Rhythm Tracking
-:: PROCESS: Recursive Fragmentation
-
-"The image has been disassembled. The code has rewritten its structure."
-
-:: TECHNICAL LOG SHEET:
-* File: {base_name}
-* Asset Pool: {len(pool_imgs)} photos
-* Rendering: {total_f} frames @ {fps}fps
-* Geometry: {orientation} @ {strand_val}px
-* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps{masters_line_en}
-* Audio Peak: {audio_peak:.4f}
-* Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
-* Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
-* Frame Sequence: {'ORDERED' if seq_mode else 'RANDOM'}{slide_info_en}{stripe_info_en}
-
-:: Direction & Algorithm: Loop507
+> Regia e Algoritmo: Loop507
 
 #glitchart #slicephoto #strandshift #digitalanatomy #signalcorruption #brutalistart
 #computationalminimalism #datadestruction #experimentalvideo"""
@@ -1527,8 +1514,20 @@ with c3:
     beat_sync = st.toggle("🎵 A tempo di musica", value=False,
         help="Attiva solo se hai caricato un audio. Disabilitato in modalità Slideshow.")
     genre = "Techno / House"
+    manual_bpm = None
+    onset_sensitivity = None
     if beat_sync:
         genre = st.selectbox("Genere", list(GENRE_PRESETS.keys()))
+
+        bpm_mode = st.radio("🎯 BPM", ["Rileva automaticamente", "Inserisci manualmente"],
+            horizontal=True, help="Se il detect sbaglia (es. tracce con poca batteria), scrivi tu il BPM.")
+        if bpm_mode == "Inserisci manualmente":
+            manual_bpm = st.number_input("BPM", min_value=40, max_value=220, value=120, step=1)
+
+        onset_sensitivity = st.slider(
+            "🎚️ Sensibilità Onset", 0.0, 1.0, GENRE_PRESETS[genre]["onset"] / 100.0, step=0.05,
+            help="Individua ogni singolo transiente audio, regolare o no. Basso = solo colpi forti. Alto = intercetta anche i transienti deboli."
+        )
 
     st.divider()
 
@@ -1560,7 +1559,8 @@ with c3:
             stripe_bg, stripe_glitch, stripe_reverse,
             stripe_chroma, stripe_flash,
             global_chroma, global_chroma_amt,
-            global_flash, global_flash_threshold, global_flash_intensity
+            global_flash, global_flash_threshold, global_flash_intensity,
+            manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
