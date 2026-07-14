@@ -1,5 +1,6 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import cv2
 from PIL import Image
 from moviepy.editor import VideoClip, AudioFileClip
@@ -515,6 +516,131 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
     return out
 
 
+def get_or_decode_audio(up_aud, duration, sr_target=22050):
+    """
+    Decodifica l'audio in cache (session_state), chiave = file + durata richiesta.
+    Evita di ridecodificare l'mp3 due volte (anteprima BPM + generazione finale)
+    quando file e durata non sono cambiati.
+    """
+    key = f"{up_aud.name}_{up_aud.size}_{round(duration, 2)}"
+    cache = st.session_state.get("audio_decode_cache")
+    if cache and cache.get("key") == key:
+        return cache["y"], cache["sr"]
+
+    up_aud.seek(0)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t:
+        t.write(up_aud.read())
+        path = t.name
+    up_aud.seek(0)  # riporto il puntatore a inizio file per eventuali letture successive
+    y, sr = librosa.load(path, sr=sr_target, mono=True, duration=duration)
+    os.remove(path)
+
+    st.session_state["audio_decode_cache"] = {"key": key, "y": y, "sr": sr}
+    return y, sr
+
+
+def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_bpm, onset_sensitivity):
+    """
+    Unica fonte di verità per l'analisi audio: usata sia dall'anteprima BPM/grafico in UI
+    sia da generate_master, così i due punti non possono andare fuori sincrono tra loro.
+    Ritorna un dict con inviluppi e metadati derivati dall'audio.
+    """
+    result = {
+        'audio_envelope': np.ones(total_f),
+        'beat_envelope': np.zeros(total_f),
+        'onset_envelope': np.zeros(total_f),
+        'rhythm_envelope': None,
+        'audio_peak': 0.0,
+        'beat_times': np.array([]),
+        'onset_times': np.array([]),
+        'detected_bpm': 0.0,
+        'bpm_source': "N/A",
+        'bs': 0, 'bd': 50, 'op': 0, 'bc': 30,
+        'rhythm_tracking': False,
+    }
+
+    rms = librosa.feature.rms(y=y)[0]
+    result['audio_peak'] = float(np.max(rms))
+    result['audio_envelope'] = np.interp(
+        np.linspace(0, len(rms) - 1, total_f),
+        np.arange(len(rms)), rms / (rms.max() + 1e-6)
+    )
+
+    if beat_sync and not slideshow_mode:
+        p = GENRE_PRESETS[genre]
+        bs, bd, op, bc = p["beat_strength"], p["beat_decay"], p["onset"], p["cache"]
+        rhythm_tracking = p["rhythm"]
+        result.update(bs=bs, bd=bd, op=op, bc=bc, rhythm_tracking=rhythm_tracking)
+
+        if bs > 0 or manual_bpm:
+            if manual_bpm:
+                # --- GRIGLIA BPM MANUALE ---
+                detected_bpm = float(manual_bpm)
+                bpm_source = "MANUALE"
+                step = 60.0 / detected_bpm
+                beat_times = np.arange(0, len(y) / sr, step)
+            else:
+                # --- BPM AUTO-DETECT ---
+                tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+                detected_bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
+                bpm_source = "AUTO"
+                beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+
+            result['beat_times']   = beat_times
+            result['detected_bpm'] = detected_bpm
+            result['bpm_source']   = bpm_source
+
+            decay_rate = 1.0 - (bd / 100.0) * 0.98
+            for bt in beat_times:
+                bf = int(bt * fps)
+                for df in range(min(int(fps * 0.5), total_f - bf)):
+                    result['beat_envelope'][bf + df] = max(result['beat_envelope'][bf + df], decay_rate ** df)
+
+        # --- ONSET DETECTION (ogni transiente, indipendente dal tempo) ---
+        sensitivity = onset_sensitivity if onset_sensitivity is not None else (op / 100.0)
+        if sensitivity > 0:
+            onset_env_raw = librosa.onset.onset_strength(y=y, sr=sr)
+            onset_env_norm = onset_env_raw / (onset_env_raw.max() + 1e-6)
+            # delta più basso = più sensibile (intercetta più transienti, anche deboli)
+            delta = 0.6 * (1.0 - sensitivity) + 0.02
+            # frame del PICCO (per leggere l'intensità reale del transiente)
+            onset_frames_peak = librosa.onset.onset_detect(
+                onset_envelope=onset_env_norm, sr=sr, backtrack=False, delta=delta
+            )
+            # frame dell'ATTACCO reale (per il timing preciso del taglio)
+            onset_frames_bt = librosa.onset.onset_detect(
+                onset_envelope=onset_env_norm, sr=sr, backtrack=True, delta=delta
+            )
+            onset_times = librosa.frames_to_time(onset_frames_bt, sr=sr)
+            result['onset_times'] = onset_times
+            for peak_frame, ot in zip(onset_frames_peak, onset_times):
+                of = int(ot * fps)
+                if of < total_f:
+                    strength = float(onset_env_norm[peak_frame])
+                    result['onset_envelope'][of] = max(result['onset_envelope'][of], strength)
+
+        if rhythm_tracking:
+            tempogram = librosa.feature.tempogram(y=y, sr=sr)
+            tempo_local = tempogram.max(axis=0).astype(float)
+            tempo_local /= (tempo_local.max() + 1e-6)
+            stft = np.abs(librosa.stft(y))
+            flux = np.sqrt(np.sum(np.diff(stft, axis=1) ** 2, axis=0))
+            flux /= (flux.max() + 1e-6)
+            min_len = min(len(tempo_local), len(flux))
+            combined = (tempo_local[:min_len] * 0.5 + flux[:min_len] * 0.5)
+            combined /= (combined.max() + 1e-6)
+            rhythm_envelope = np.interp(
+                np.linspace(0, len(combined) - 1, total_f),
+                np.arange(len(combined)), combined
+            )
+            kernel = np.ones(fps // 2) / (fps // 2)
+            rhythm_envelope = np.convolve(rhythm_envelope, kernel, mode='same')
+            rhythm_envelope = np.clip(rhythm_envelope / (rhythm_envelope.max() + 1e-6), 0.0, 1.0)
+            result['rhythm_envelope'] = rhythm_envelope
+
+    return result
+
+
 def generate_master(up_m1, up_m2, up_trit, up_aud,
                     orientation, strand_val, max_limit,
                     chaos_val, photo_speed, format_type,
@@ -580,95 +706,33 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     onset_envelope  = np.zeros(total_f)
     rhythm_envelope = None
     audio_peak      = 0.0
-    beat_count      = 0
-    temp_aud_path   = None
     bs, bd, op, bc  = 0, 50, 0, 30
     rhythm_tracking = False
     detected_bpm    = 0.0
     bpm_source      = "N/A"
+    temp_aud_path   = None
 
     if up_aud:
+        y, sr = get_or_decode_audio(up_aud, max_limit)
+        audio_result = analyze_audio(
+            y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_bpm, onset_sensitivity
+        )
+        audio_envelope  = audio_result['audio_envelope']
+        beat_envelope   = audio_result['beat_envelope']
+        onset_envelope  = audio_result['onset_envelope']
+        rhythm_envelope = audio_result['rhythm_envelope']
+        audio_peak      = audio_result['audio_peak']
+        bs, bd, op, bc  = audio_result['bs'], audio_result['bd'], audio_result['op'], audio_result['bc']
+        rhythm_tracking = audio_result['rhythm_tracking']
+        detected_bpm    = audio_result['detected_bpm']
+        bpm_source      = audio_result['bpm_source']
+
+        # file temporaneo persistente per il muxing audio finale (AudioFileClip più sotto)
+        up_aud.seek(0)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t:
             t.write(up_aud.read())
             temp_aud_path = t.name
-
-        y, sr = librosa.load(temp_aud_path, sr=22050, mono=True, duration=max_limit)
-
-        rms = librosa.feature.rms(y=y)[0]
-        audio_peak = float(np.max(rms))
-        audio_envelope = np.interp(
-            np.linspace(0, len(rms)-1, total_f),
-            np.arange(len(rms)), rms / (rms.max() + 1e-6)
-        )
-
-        if beat_sync and not slideshow_mode:
-            p = GENRE_PRESETS[genre]
-            bs = p["beat_strength"]
-            bd = p["beat_decay"]
-            op = p["onset"]
-            bc = p["cache"]
-            rhythm_tracking = p["rhythm"]
-
-            if bs > 0 or manual_bpm:
-                if manual_bpm:
-                    # --- GRIGLIA BPM MANUALE ---
-                    detected_bpm = float(manual_bpm)
-                    bpm_source = "MANUALE"
-                    step = 60.0 / detected_bpm
-                    beat_times = np.arange(0, len(y) / sr, step)
-                else:
-                    # --- BPM AUTO-DETECT ---
-                    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-                    detected_bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
-                    bpm_source = "AUTO"
-                    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-
-                beat_count = len(beat_times)
-                decay_rate = 1.0 - (bd / 100.0) * 0.98
-                for bt in beat_times:
-                    bf = int(bt * fps)
-                    for df in range(min(int(fps * 0.5), total_f - bf)):
-                        beat_envelope[bf + df] = max(beat_envelope[bf + df], decay_rate ** df)
-
-            # --- ONSET DETECTION (ogni transiente, indipendente dal tempo) ---
-            sensitivity = onset_sensitivity if onset_sensitivity is not None else (op / 100.0)
-            if sensitivity > 0:
-                onset_env_raw = librosa.onset.onset_strength(y=y, sr=sr)
-                onset_env_norm = onset_env_raw / (onset_env_raw.max() + 1e-6)
-                # delta più basso = più sensibile (intercetta più transienti, anche deboli)
-                delta = 0.6 * (1.0 - sensitivity) + 0.02
-                # frame del PICCO (per leggere l'intensità reale del transiente)
-                onset_frames_peak = librosa.onset.onset_detect(
-                    onset_envelope=onset_env_norm, sr=sr, backtrack=False, delta=delta
-                )
-                # frame dell'ATTACCO reale (per il timing preciso del taglio)
-                onset_frames_bt = librosa.onset.onset_detect(
-                    onset_envelope=onset_env_norm, sr=sr, backtrack=True, delta=delta
-                )
-                onset_times = librosa.frames_to_time(onset_frames_bt, sr=sr)
-                for peak_frame, ot in zip(onset_frames_peak, onset_times):
-                    of = int(ot * fps)
-                    if of < total_f:
-                        strength = float(onset_env_norm[peak_frame])
-                        onset_envelope[of] = max(onset_envelope[of], strength)
-
-        if rhythm_tracking:
-            tempogram = librosa.feature.tempogram(y=y, sr=sr)
-            tempo_local = tempogram.max(axis=0).astype(float)
-            tempo_local /= (tempo_local.max() + 1e-6)
-            stft = np.abs(librosa.stft(y))
-            flux = np.sqrt(np.sum(np.diff(stft, axis=1) ** 2, axis=0))
-            flux /= (flux.max() + 1e-6)
-            min_len = min(len(tempo_local), len(flux))
-            combined = (tempo_local[:min_len] * 0.5 + flux[:min_len] * 0.5)
-            combined /= (combined.max() + 1e-6)
-            rhythm_envelope = np.interp(
-                np.linspace(0, len(combined)-1, total_f),
-                np.arange(len(combined)), combined
-            )
-            kernel = np.ones(fps // 2) / (fps // 2)
-            rhythm_envelope = np.convolve(rhythm_envelope, kernel, mode='same')
-            rhythm_envelope = np.clip(rhythm_envelope / (rhythm_envelope.max() + 1e-6), 0.0, 1.0)
+        up_aud.seek(0)
 
     # --- traiettorie strisce (ora che beat_envelope/onset_envelope esistono) ---
     if stripe_mode and stripes:
@@ -1153,6 +1217,7 @@ with c2:
     stripe_bg          = "Master 1"
     stripe_glitch      = False
     stripe_reverse     = False
+    stripe_force_beat_react = False
 
     if stripe_mode:
         stripe_orientation = st.radio("Orientamento strisce",
@@ -1175,6 +1240,10 @@ with c2:
         with col_tog2:
             stripe_reverse = st.toggle("🔄 Reverse", value=False,
                 help="Inverte: strisce ferme, tutto il resto Calderone.")
+
+        stripe_force_beat_react = st.toggle("🎵 Tutto a tempo", value=False,
+            help="Forza 'Sincronizza al beat' su TUTTE le strisce, ignorando il toggle di ognuna. "
+                 "Utile per accendere/spegnere in blocco senza doverle aprire una per una.")
 
         st.divider()
 
@@ -1385,6 +1454,10 @@ with c2:
 
             stripes.append(s_dict)
 
+        if stripe_force_beat_react:
+            for _s in stripes:
+                _s['beat_react'] = True
+
         # Applica l'eliminazione dopo aver renderizzato tutto
         if _to_delete is not None:
             st.session_state.stripe_ids.remove(_to_delete)
@@ -1593,30 +1666,42 @@ with c3:
             horizontal=True, help="Se il detect sbaglia (es. tracce con poca batteria), scrivi tu il BPM.")
         if bpm_mode == "Inserisci manualmente":
             manual_bpm = st.number_input("BPM", min_value=40, max_value=220, value=120, step=1)
-        else:
-            if up_a is not None:
-                bpm_cache_key = f"{up_a.name}_{up_a.size}"
-                if st.session_state.get("bpm_preview_key") != bpm_cache_key:
-                    with st.spinner("🎯 Rilevo BPM in automatico..."):
-                        up_a.seek(0)
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t_bpm:
-                            t_bpm.write(up_a.read())
-                            bpm_preview_path = t_bpm.name
-                        up_a.seek(0)  # riporto il puntatore a inizio file per la generazione finale
-                        y_bpm, sr_bpm = librosa.load(bpm_preview_path, sr=22050, mono=True, duration=60)
-                        tempo_bpm, _ = librosa.beat.beat_track(y=y_bpm, sr=sr_bpm)
-                        tempo_bpm = float(tempo_bpm) if np.isscalar(tempo_bpm) else float(tempo_bpm[0])
-                        st.session_state["bpm_preview"] = tempo_bpm
-                        st.session_state["bpm_preview_key"] = bpm_cache_key
-                        os.remove(bpm_preview_path)
-                st.info(f"🎯 BPM rilevato automaticamente: **{st.session_state['bpm_preview']:.1f}**")
-            else:
-                st.caption("Carica un audio per rilevare il BPM.")
 
         onset_sensitivity = st.slider(
             "🎚️ Sensibilità Onset", 0.0, 1.0, GENRE_PRESETS[genre]["onset"] / 100.0, step=0.05,
             help="Individua ogni singolo transiente audio, regolare o no. Basso = solo colpi forti. Alto = intercetta anche i transienti deboli."
         )
+
+        # --- anteprima BPM + grafico beat/onset: stessa analisi della generazione finale ---
+        if up_a is not None:
+            preview_key = f"{up_a.name}_{up_a.size}_{round(dur,2)}_{genre}_{manual_bpm}_{round(onset_sensitivity,2)}"
+            if st.session_state.get("audio_preview_key") != preview_key:
+                with st.spinner("🎯 Analisi audio in corso..."):
+                    y_prev, sr_prev = get_or_decode_audio(up_a, dur)
+                    total_f_prev = int(dur * 24)
+                    preview_result = analyze_audio(
+                        y_prev, sr_prev, total_f_prev, 24,
+                        True, False, genre, manual_bpm, onset_sensitivity
+                    )
+                    st.session_state["audio_preview"] = preview_result
+                    st.session_state["audio_preview_key"] = preview_key
+            preview_result = st.session_state["audio_preview"]
+
+            if preview_result['detected_bpm'] > 0:
+                st.info(f"🎯 BPM {preview_result['bpm_source'].lower()}: **{preview_result['detected_bpm']:.1f}**")
+
+            total_f_prev = len(preview_result['audio_envelope'])
+            n_points = min(400, total_f_prev)
+            idx = np.linspace(0, total_f_prev - 1, n_points).astype(int)
+            chart_df = pd.DataFrame({
+                "Volume": preview_result['audio_envelope'][idx],
+                "Beat":   preview_result['beat_envelope'][idx],
+                "Onset":  preview_result['onset_envelope'][idx],
+            })
+            st.caption("📊 Anteprima: volume, beat e onset rilevati lungo la durata")
+            st.line_chart(chart_df, height=180)
+        else:
+            st.caption("Carica un audio per l'anteprima BPM e il grafico beat/onset.")
 
     st.divider()
 
