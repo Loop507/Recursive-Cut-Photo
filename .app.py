@@ -1128,10 +1128,13 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
 
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
+
+:: IT ::
 :: MOTORE: recursive_cut_pro [v10.0 — keyframe]
 :: EFFETTO: Recursive Strand Shift
 :: ANALISI: RMS / Beat Sync / Rhythm Tracking
 :: PROCESSO: Frammentazione Ricorsiva
+
 "L'immagine e' stata smontata. Il codice ne ha riscritto la struttura."
 
 > TECHNICAL LOG SHEET:
@@ -1148,7 +1151,29 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
 * Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
 
-> Regia e Algoritmo: Loop507
+:: EN ::
+:: ENGINE: recursive_cut_pro [v10.0 — keyframe]
+:: EFFECT: Recursive Strand Shift
+:: ANALYSIS: RMS / Beat Sync / Rhythm Tracking
+:: PROCESS: Recursive Fragmentation
+
+"The image has been disassembled. The code rewrote its structure."
+
+> TECHNICAL LOG SHEET:
+* File: {base_name}
+* Asset Pool: {len(pool_imgs)} photos
+* Rendering: {total_f} frames @ {fps}fps
+* Geometry: {orientation} @ {strand_val}px
+* Chaos: {chaos_val}% | Photo Speed: {photo_speed}fps
+* M1 fades out at: {int(m1_end*100)}% | M2 appears at: {int(m2_start*100)}%
+* Audio Peak: {audio_peak:.4f}
+* Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
+* BPM: {f'{detected_bpm:.1f} ({bpm_source})' if beat_sync and not slideshow_mode and detected_bpm > 0 else 'N/A'}
+* Onset Sensitivity: {f'{int(onset_sensitivity*100)}%' if beat_sync and not slideshow_mode and onset_sensitivity is not None else 'N/A (preset)'}
+* Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
+* Frame Sequence: {'ORDERED' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
+
+> Regia e Algoritmo / Direction & Algorithm: Loop507
 
 #glitchart #slicephoto #strandshift #digitalanatomy #signalcorruption #brutalistart
 #computationalminimalism #datadestruction #experimentalvideo"""
