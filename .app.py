@@ -1654,6 +1654,20 @@ with c3:
 
     st.divider()
 
+    slideshow_mode = st.toggle("📽️ Modalità Slideshow", value=False,
+        help="Sfoglia le foto lentamente con transizioni glitch. Il ritmo è controllato dagli slider, non dal beat.")
+    slide_hold       = 3.0
+    slide_trans      = 2.0
+    slide_trans_type = "Dissolve Glitchato"
+    if slideshow_mode:
+        slide_hold       = st.slider("🖼️ Durata foto (sec)",        1.0, 15.0, 3.0, step=0.5)
+        slide_trans      = st.slider("🌀 Durata transizione (sec)",  0.5, 10.0, 2.0, step=0.5)
+        slide_trans_type = st.radio("Tipo transizione",
+            ["Dissolve Glitchato", "Glitch Burst"],
+            help="Dissolve: le foto si mescolano con glitch. Burst: foto ferma → esplode → foto nuova.")
+
+    st.divider()
+
     beat_sync = st.toggle("🎵 A tempo di musica", value=False,
         help="Attiva solo se hai caricato un audio. Disabilitato in modalità Slideshow.")
     genre = "Techno / House"
@@ -1673,15 +1687,17 @@ with c3:
         )
 
         # --- anteprima BPM + grafico beat/onset: stessa analisi della generazione finale ---
+        if slideshow_mode:
+            st.caption("⚠️ Beat Sync disattivato in modalità Slideshow: l'anteprima qui sotto non si applicherà al render.")
         if up_a is not None:
-            preview_key = f"{up_a.name}_{up_a.size}_{round(dur,2)}_{genre}_{manual_bpm}_{round(onset_sensitivity,2)}"
+            preview_key = f"{up_a.name}_{up_a.size}_{round(dur,2)}_{genre}_{manual_bpm}_{round(onset_sensitivity,2)}_{slideshow_mode}"
             if st.session_state.get("audio_preview_key") != preview_key:
                 with st.spinner("🎯 Analisi audio in corso..."):
                     y_prev, sr_prev = get_or_decode_audio(up_a, dur)
                     total_f_prev = int(dur * 24)
                     preview_result = analyze_audio(
                         y_prev, sr_prev, total_f_prev, 24,
-                        True, False, genre, manual_bpm, onset_sensitivity
+                        True, slideshow_mode, genre, manual_bpm, onset_sensitivity
                     )
                     st.session_state["audio_preview"] = preview_result
                     st.session_state["audio_preview_key"] = preview_key
@@ -1702,20 +1718,6 @@ with c3:
             st.line_chart(chart_df, height=180)
         else:
             st.caption("Carica un audio per l'anteprima BPM e il grafico beat/onset.")
-
-    st.divider()
-
-    slideshow_mode = st.toggle("📽️ Modalità Slideshow", value=False,
-        help="Sfoglia le foto lentamente con transizioni glitch. Il ritmo è controllato dagli slider, non dal beat.")
-    slide_hold       = 3.0
-    slide_trans      = 2.0
-    slide_trans_type = "Dissolve Glitchato"
-    if slideshow_mode:
-        slide_hold       = st.slider("🖼️ Durata foto (sec)",        1.0, 15.0, 3.0, step=0.5)
-        slide_trans      = st.slider("🌀 Durata transizione (sec)",  0.5, 10.0, 2.0, step=0.5)
-        slide_trans_type = st.radio("Tipo transizione",
-            ["Dissolve Glitchato", "Glitch Burst"],
-            help="Dissolve: le foto si mescolano con glitch. Burst: foto ferma → esplode → foto nuova.")
 
     st.divider()
 
