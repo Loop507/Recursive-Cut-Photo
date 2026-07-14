@@ -394,12 +394,26 @@ def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
     out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
 
 
+def resolve_reactive_opacity(s_dict, base_opacity, beat_val, beat_sync_on, auto_key):
+    """
+    Se 'beat_react' è attivo, il beat_sync globale è ON, e il movimento automatico
+    associato (auto_key) è spento, la striscia resta FERMA in posizione e pulsa in
+    opacità a tempo di beat (dal battito rilevato/manuale, non dagli onset), invece
+    di scattare in posizione. Se auto_key è attivo, l'opacità resta quella base:
+    in quel caso è già la posizione a reagire (accelerando sul beat).
+    """
+    if beat_sync_on and s_dict.get('beat_react', False) and not s_dict.get(auto_key, False):
+        resting = base_opacity * 0.35
+        return resting + (base_opacity - resting) * beat_val
+    return base_opacity
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
                         stripe_reverse=False, audio_envelope_val=1.0,
                         stripe_offsets=None,
                         stripe_chroma=False, stripe_flash=False,
-                        beat_val=0.0,
+                        beat_val=0.0, beat_sync_on=False,
                         t=0.0, total_dur=10.0):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
@@ -408,6 +422,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
     stripe_chroma:  aberrazione cromatica dentro la striscia
     stripe_flash:   striscia si spegne (mostra bg) sui beat forti
     beat_val:       valore beat envelope corrente (0-1)
+    beat_sync_on:   True se 'A tempo di musica' è attivo (serve per l'opacità pulsante)
     """
     if stripe_offsets is None:
         stripe_offsets = [50.0] * len(stripes)
@@ -453,6 +468,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         chroma_amt = int(s.get('chroma_amount', 6))
         blend_mode = s.get('blend_mode', 'Normal')
         opacity    = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
+        opacity    = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'move_random')
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
@@ -478,6 +494,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
+            opacity = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'auto_rotate')
             draw_lancetta(out, src_stripe, h, w,
                           s.get('cx', 50.0), s.get('cy', 50.0),
                           angle, length_pct,
@@ -490,6 +507,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                 radius = radius * (0.2 + 0.8 * audio_envelope_val)
             radius = resolve_reactive_val(s, radius, offset, 'auto_expand')
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
+            opacity = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'auto_expand')
             draw_cerchio(out, src_stripe, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
                          radius, s.get('filled', True),
@@ -503,6 +521,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
+            opacity = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'auto_rotate')
             draw_striscia_ruotata(out, src_stripe, h, w,
                                   s.get('cx', 50.0), s.get('cy', 50.0),
                                   angle,
@@ -743,20 +762,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         beat_mult = 1.0 + beat_envelope * 3.0 + onset_envelope * 2.0
         warped_t = np.cumsum(beat_mult) * dt
 
-        # scatto autonomo: ad ogni beat/onset la traiettoria "salta" invece di scorrere
-        _trigger = (beat_envelope >= 0.999) | (onset_envelope > 0)
-        _trigger_idx = np.cumsum(_trigger.astype(int))
-        _pulse_sign = np.where(_trigger_idx % 2 == 0, 1.0, -1.0)
-        _pulse_amt_raw = np.maximum(beat_envelope, onset_envelope)  # 0-1
-
-        def _beat_pulse(base_val, amp, wrap=False, lo=0.0, hi=100.0):
-            delta = _pulse_sign * _pulse_amt_raw * amp
-            if wrap:
-                return (base_val + delta) % hi
-            return np.clip(base_val + delta, lo, hi)
-
-        def _ramp_or_pulse(s, cfg, base_t, react):
-            """Rampa continua (auto_key ON) oppure scatto sul beat (react ON, auto_key OFF)."""
+        def _ramp_or_pulse(s, cfg, base_t):
+            """Rampa continua se il moto automatico (auto_key) è ON; altrimenti resta ferma
+            al valore base (l'eventuale pulsazione a tempo di beat la fa l'opacità, non la posizione)."""
             base_val = s.get(cfg["base_key"], cfg["base_default"])
             if s.get(cfg["auto_key"], False):
                 spd = s.get(cfg["speed_key"], cfg["speed_default"])
@@ -764,11 +772,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 if cfg["add_base_to_ramp"]:
                     ramp = base_val + ramp
                 return ramp % cfg["wrap_hi"]
-            elif react:
-                return _beat_pulse(base_val, amp=cfg["pulse_amp"], wrap=cfg["pulse_wrap"],
-                                    lo=cfg.get("pulse_lo", 0.0), hi=cfg.get("pulse_hi", cfg["wrap_hi"]))
-            else:
-                return np.full(total_f, 50.0)
+            return np.full(total_f, base_val)
 
         for s in stripes:
             s_orient = s.get('orientation', stripe_orientation)
@@ -776,7 +780,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             base_t = warped_t if react else t_arr
 
             if s_orient in STRIPE_MOTION_CONFIG:
-                traj = _ramp_or_pulse(s, STRIPE_MOTION_CONFIG[s_orient], base_t, react)
+                traj = _ramp_or_pulse(s, STRIPE_MOTION_CONFIG[s_orient], base_t)
                 stripe_offsets_t.append(traj)
 
             elif s_orient in ("Orizzontale", "Verticale"):
@@ -789,11 +793,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     traj = (np.sin(2*np.pi*freq1*base_t + phase1) * 0.5 +
                             np.sin(2*np.pi*freq2*base_t + phase2) * 0.5)
                     traj = (traj + 1) / 2 * 80 + 10
-                elif react:
-                    # autonomo: la striscia scatta sui beat/onset, senza bisogno di movimento random
-                    traj = _beat_pulse(base_offset, amp=35.0, lo=0.0, hi=100.0)
                 else:
-                    traj = np.full(total_f, 50.0)
+                    # ferma al suo posto: con solo beat_react, pulsa in opacità invece di muoversi
+                    traj = np.full(total_f, base_offset)
                 stripe_offsets_t.append(traj)
 
             else:
@@ -859,7 +861,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
                                                     stripe_chroma, stripe_flash, _bval,
-                                                    t=t, total_dur=max_limit)
+                                                    t=t, total_dur=max_limit, beat_sync_on=beat_sync)
                 else:
                     out_frame = img_cur
                 return cv2.resize(out_frame, (out_w, out_h))
@@ -882,7 +884,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval,
-                                                        t=t, total_dur=max_limit)
+                                                        t=t, total_dur=max_limit, beat_sync_on=beat_sync)
                     else:
                         out_frame = glitched
                 else:
@@ -894,7 +896,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval,
-                                                        t=t, total_dur=max_limit)
+                                                        t=t, total_dur=max_limit, beat_sync_on=beat_sync)
                     else:
                         out_frame = glitched
 
@@ -1026,7 +1028,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval,
-                                            t=t, total_dur=max_limit),
+                                            t=t, total_dur=max_limit, beat_sync_on=beat_sync),
                         (out_w, out_h))
                 return cv2.resize(pick(), (out_w, out_h))
 
@@ -1078,7 +1080,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval,
-                                            t=t, total_dur=max_limit)
+                                            t=t, total_dur=max_limit, beat_sync_on=beat_sync)
 
             # --- Effetti globali standalone (senza strisce selettive) ---
             if not stripe_mode:
