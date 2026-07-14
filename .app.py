@@ -40,24 +40,26 @@ GENRE_PRESETS = {
 STRIPE_MOTION_CONFIG = {
     "Lancetta":         dict(auto_key="auto_rotate", speed_key="rotate_speed", speed_default=30.0,
                              base_key="angle", base_default=90.0, wrap_hi=360.0,
-                             add_base_to_ramp=True, pulse_amp=45.0, pulse_wrap=True),
+                             add_base_to_ramp=True),
     "Striscia Ruotata": dict(auto_key="auto_rotate", speed_key="rotate_speed", speed_default=30.0,
                              base_key="angle", base_default=0.0, wrap_hi=360.0,
-                             add_base_to_ramp=True, pulse_amp=45.0, pulse_wrap=True),
+                             add_base_to_ramp=True),
     "Cerchio":          dict(auto_key="auto_expand", speed_key="expand_speed", speed_default=20.0,
                              base_key="radius", base_default=30.0, wrap_hi=100.0,
-                             add_base_to_ramp=False, pulse_amp=30.0, pulse_wrap=False,
-                             pulse_lo=1.0, pulse_hi=100.0),
+                             add_base_to_ramp=False),
 }
 
 
 def resolve_reactive_val(s_dict, base_val, offset, auto_key):
     """
-    Sceglie tra valore statico (base_val) e offset animato (rampa continua o scatto sul beat),
-    a seconda che 'auto_key' (es. auto_rotate/auto_expand/move_random) o 'beat_react' sia attivo
-    per questa striscia. Usato per tenere allineati calcolo-traiettoria e disegno.
+    Sceglie tra valore statico/keyframe (base_val) e offset animato (rampa continua),
+    a seconda che 'auto_key' (es. auto_rotate/auto_expand/move_random) sia attivo per
+    questa striscia. 'beat_react' da solo NON tocca più la posizione (pulsa solo
+    l'opacità, vedi resolve_reactive_opacity) — altrimenti un'animazione a keyframe
+    sull'angolo/raggio verrebbe silenziosamente ignorata appena si accende 'Sincronizza
+    al beat', anche senza moto automatico.
     """
-    if s_dict.get(auto_key, False) or s_dict.get('beat_react', False):
+    if s_dict.get(auto_key, False):
         return offset
     return base_val
 
