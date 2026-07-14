@@ -34,9 +34,9 @@ GENRE_PRESETS = {
     "Hip Hop / Jazz":  {"beat_strength": 60, "beat_decay": 35, "onset": 50, "cache": 30, "rhythm": False},
 }
 
-# Config condivisa per le strisce con moto "a rampa" (angolo/raggio che cresce nel tempo o
-# scatta sul beat). Orizzontale/Verticale non è qui perché il suo moto automatico è un'oscillazione
-# sinusoidale, non una rampa, e vive nel proprio ramo in generate_master.
+# Config condivisa per le strisce con moto "a rampa" (angolo/raggio che cresce nel tempo,
+# eventualmente accelerando sul beat). Orizzontale/Verticale non è qui perché il suo moto automatico è
+# un'oscillazione sinusoidale, non una rampa, e vive nel proprio ramo in generate_master.
 STRIPE_MOTION_CONFIG = {
     "Lancetta":         dict(auto_key="auto_rotate", speed_key="rotate_speed", speed_default=30.0,
                              base_key="angle", base_default=90.0, wrap_hi=360.0,
@@ -602,7 +602,8 @@ def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_
                 beat_times = np.arange(0, len(y) / sr, step)
             else:
                 # --- BPM AUTO-DETECT ---
-                tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+                onset_env_tempo = librosa.onset.onset_strength(y=y, sr=sr)
+                tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, onset_envelope=onset_env_tempo)
                 detected_bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
                 bpm_source = "AUTO"
                 beat_times = librosa.frames_to_time(beat_frames, sr=sr)
@@ -727,8 +728,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     onset_envelope  = np.zeros(total_f)
     rhythm_envelope = None
     audio_peak      = 0.0
-    bs, bd, op, bc  = 0, 50, 0, 30
-    rhythm_tracking = False
+    bs, bc          = 0, 30
     detected_bpm    = 0.0
     bpm_source      = "N/A"
     temp_aud_path   = None
@@ -743,8 +743,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         onset_envelope  = audio_result['onset_envelope']
         rhythm_envelope = audio_result['rhythm_envelope']
         audio_peak      = audio_result['audio_peak']
-        bs, bd, op, bc  = audio_result['bs'], audio_result['bd'], audio_result['op'], audio_result['bc']
-        rhythm_tracking = audio_result['rhythm_tracking']
+        bs, bc          = audio_result['bs'], audio_result['bc']
         detected_bpm    = audio_result['detected_bpm']
         bpm_source      = audio_result['bpm_source']
 
@@ -863,7 +862,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
                                                     stripe_chroma, stripe_flash, _bval,
-                                                    t=t, total_dur=max_limit, beat_sync_on=beat_sync)
+                                                    t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                 else:
                     out_frame = img_cur
                 return cv2.resize(out_frame, (out_w, out_h))
@@ -886,7 +885,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval,
-                                                        t=t, total_dur=max_limit, beat_sync_on=beat_sync)
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                     else:
                         out_frame = glitched
                 else:
@@ -898,7 +897,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval,
-                                                        t=t, total_dur=max_limit, beat_sync_on=beat_sync)
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                     else:
                         out_frame = glitched
 
@@ -1030,7 +1029,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval,
-                                            t=t, total_dur=max_limit, beat_sync_on=beat_sync),
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None)),
                         (out_w, out_h))
                 return cv2.resize(pick(), (out_w, out_h))
 
@@ -1082,7 +1081,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval,
-                                            t=t, total_dur=max_limit, beat_sync_on=beat_sync)
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
 
             # --- Effetti globali standalone (senza strisce selettive) ---
             if not stripe_mode:
@@ -1156,6 +1155,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
 
 :: EN ::
+[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 :: ENGINE: recursive_cut_pro [v10.0 — keyframe]
 :: EFFECT: Recursive Strand Shift
 :: ANALYSIS: RMS / Beat Sync / Rhythm Tracking
@@ -1349,7 +1349,7 @@ with c2:
                     if s_dict['move_random']:
                         s_dict['move_speed'] = st.slider("Velocità movimento", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"mbr_{i}",
-                        help="Autonomo: la striscia scatta sui beat/onset rilevati anche senza 'Movimento random'. Se entrambi attivi, il movimento random accelera sul beat invece di scattare.")
+                        help="Autonomo: senza 'Movimento random', la striscia resta ferma e pulsa in opacità a tempo di beat. Se 'Movimento random' è attivo, invece è il movimento ad accelerare sul beat.")
                     s_dict['offset_length'] = float(st.slider("Offset dx/sx (%)", 0, 100, 50, key=f"oc_{i}"))
 
                 elif stripe_orient_i == "Striscia Ruotata":
@@ -1376,7 +1376,7 @@ with c2:
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"rbr_{i}",
-                        help="Autonomo: la striscia scatta d'angolo sui beat/onset rilevati anche senza 'Rotazione automatica'. Se entrambe attive, la rotazione accelera sul beat invece di scattare.")
+                        help="Autonomo: senza 'Rotazione automatica', la striscia resta ferma e pulsa in opacità a tempo di beat. Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
 
                 elif stripe_orient_i == "Lancetta":
                     col_cx, col_cy = st.columns(2)
@@ -1401,7 +1401,7 @@ with c2:
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"lbr_{i}",
-                        help="Autonomo: la lancetta scatta d'angolo sui beat/onset rilevati anche senza 'Rotazione automatica'. Se entrambe attive, la rotazione accelera sul beat invece di scattare.")
+                        help="Autonomo: senza 'Rotazione automatica', la lancetta resta ferma e pulsa in opacità a tempo di beat. Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
 
                 elif stripe_orient_i == "Cerchio":
                     col_cx, col_cy = st.columns(2)
@@ -1428,7 +1428,7 @@ with c2:
                     if s_dict.get('auto_expand'):
                         s_dict['expand_speed'] = st.slider("Velocità espansione (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"cbr_{i}",
-                        help="Autonomo: il cerchio scatta di raggio sui beat/onset rilevati anche senza 'Espansione ciclica'. Se entrambe attive, l'espansione accelera sul beat invece di scattare.")
+                        help="Autonomo: senza 'Espansione ciclica', il cerchio resta fermo e pulsa in opacità a tempo di beat. Se 'Espansione ciclica' è attiva, invece è l'espansione ad accelerare sul beat.")
 
                 st.divider()
 
@@ -1706,9 +1706,11 @@ with c3:
         genre = st.selectbox("Genere", list(GENRE_PRESETS.keys()))
 
         bpm_mode = st.radio("🎯 BPM", ["Rileva automaticamente", "Inserisci manualmente"],
-            horizontal=True, help="Se il detect sbaglia (es. tracce con poca batteria), scrivi tu il BPM.")
+            horizontal=True, key="bpm_mode_radio",
+            help="Se il detect sbaglia (es. tracce con poca batteria), scrivi tu il BPM.")
         if bpm_mode == "Inserisci manualmente":
-            manual_bpm = st.number_input("BPM", min_value=40, max_value=220, value=120, step=1)
+            manual_bpm = st.number_input("BPM", min_value=40, max_value=220, value=120, step=1,
+                key="manual_bpm_input")
 
         onset_sensitivity = st.slider(
             "🎚️ Sensibilità Onset", 0.0, 1.0, GENRE_PRESETS[genre]["onset"] / 100.0, step=0.05,
@@ -1734,6 +1736,20 @@ with c3:
 
             if preview_result['detected_bpm'] > 0:
                 st.info(f"🎯 BPM {preview_result['bpm_source'].lower()}: **{preview_result['detected_bpm']:.1f}**")
+                st.caption("Ti sembra raddoppiato o dimezzato rispetto al vero tempo del brano? Correggilo qui:")
+                col_half, col_double = st.columns(2)
+                with col_half:
+                    if st.button("÷2 BPM", key="bpm_half_btn", use_container_width=True):
+                        new_bpm = int(round(preview_result['detected_bpm'] / 2.0))
+                        st.session_state["bpm_mode_radio"] = "Inserisci manualmente"
+                        st.session_state["manual_bpm_input"] = max(40, min(220, new_bpm))
+                        st.rerun()
+                with col_double:
+                    if st.button("×2 BPM", key="bpm_double_btn", use_container_width=True):
+                        new_bpm = int(round(preview_result['detected_bpm'] * 2.0))
+                        st.session_state["bpm_mode_radio"] = "Inserisci manualmente"
+                        st.session_state["manual_bpm_input"] = max(40, min(220, new_bpm))
+                        st.rerun()
 
             total_f_prev = len(preview_result['audio_envelope'])
             n_points = min(400, total_f_prev)
