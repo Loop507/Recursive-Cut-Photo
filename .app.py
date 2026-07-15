@@ -614,6 +614,21 @@ def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_
             result['detected_bpm'] = detected_bpm
             result['bpm_source']   = bpm_source
 
+            # Se il primo beat rilevato non è vicino a t=0 (tipico dell'auto-detect, che spesso
+            # aggancia il tempo solo dopo una frazione di secondo), estendo la griglia all'indietro
+            # fino all'inizio del brano assumendo lo stesso tempo — altrimenti l'effetto a beat
+            # (opacità, movimento) resta fermo/spento per i primi frame invece di partire subito.
+            if len(beat_times) >= 1 and beat_times[0] > 1e-6:
+                period_start = (float(np.median(np.diff(beat_times))) if len(beat_times) >= 2
+                                else 60.0 / detected_bpm if detected_bpm > 0 else None)
+                if period_start and period_start > 1e-6:
+                    n_prepend = int(np.floor(beat_times[0] / period_start))
+                    if n_prepend > 0:
+                        prepend_times = beat_times[0] - period_start * np.arange(n_prepend, 0, -1)
+                        prepend_times = prepend_times[prepend_times >= 0]
+                        beat_times = np.concatenate([prepend_times, beat_times])
+                        result['beat_times'] = beat_times
+
             decay_rate = 1.0 - (bd / 100.0) * 0.98
             for bt in beat_times:
                 bf = int(bt * fps)
@@ -1147,20 +1162,32 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     rhythm_on = beat_sync and not slideshow_mode and GENRE_PRESETS[genre]["rhythm"]
 
-    slide_info = ""
+    slide_info_it = ""
+    slide_info_en = ""
     if slideshow_mode:
-        slide_info = f"""
+        slide_info_it = f"""
 * MODALITÀ: SLIDESHOW LENTO
 * Durata foto: {slide_hold}s | Transizione: {slide_trans}s
 * Tipo transizione: {slide_trans_type}
 * Sequenza: {'ORDINATA' if seq_mode else 'RANDOM'}"""
+        slide_info_en = f"""
+* MODE: SLOW SLIDESHOW
+* Photo duration: {slide_hold}s | Transition: {slide_trans}s
+* Transition type: {slide_trans_type}
+* Sequence: {'ORDERED' if seq_mode else 'RANDOM'}"""
 
-    stripe_info = ""
+    stripe_info_it = ""
+    stripe_info_en = ""
     if stripe_mode and stripes:
         bg_label = "Frame" if stripe_bg == "Calderone" else stripe_bg
-        stripe_info = f"""
+        stripe_info_it = f"""
 * STRISCE SELETTIVE: {len(stripes)} striscia/e ({stripe_orientation})
 * Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
+        stripe_info_en = f"""
+* SELECTIVE STRIPES: {len(stripes)} stripe(s) ({stripe_orientation})
+* Background: {bg_label} | Stripe: {'GLITCHED' if stripe_glitch else 'ORIGINAL'}"""
+
+    bpm_source_en = {"MANUALE": "MANUAL", "AUTO": "AUTO", "N/A": "N/A"}.get(bpm_source, bpm_source)
 
     report_text = f"""[SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 
@@ -1184,7 +1211,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * BPM: {f'{detected_bpm:.1f} ({bpm_source})' if beat_sync and not slideshow_mode and detected_bpm > 0 else 'N/A'}
 * Onset Sensitivity: {f'{int(onset_sensitivity*100)}%' if beat_sync and not slideshow_mode and onset_sensitivity is not None else 'N/A (preset)'}
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
-* Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
+* Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info_it}{stripe_info_it}
 
 :: EN ::
 [SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
@@ -1204,10 +1231,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * M1 fades out at: {int(m1_end*100)}% | M2 appears at: {int(m2_start*100)}%
 * Audio Peak: {audio_peak:.4f}
 * Beat Sync: {'ON' if beat_sync and not slideshow_mode else 'OFF (Slideshow)' if slideshow_mode else 'OFF'}
-* BPM: {f'{detected_bpm:.1f} ({bpm_source})' if beat_sync and not slideshow_mode and detected_bpm > 0 else 'N/A'}
+* BPM: {f'{detected_bpm:.1f} ({bpm_source_en})' if beat_sync and not slideshow_mode and detected_bpm > 0 else 'N/A'}
 * Onset Sensitivity: {f'{int(onset_sensitivity*100)}%' if beat_sync and not slideshow_mode and onset_sensitivity is not None else 'N/A (preset)'}
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
-* Frame Sequence: {'ORDERED' if seq_mode else 'RANDOM'}{slide_info}{stripe_info}
+* Frame Sequence: {'ORDERED' if seq_mode else 'RANDOM'}{slide_info_en}{stripe_info_en}
 
 > Regia e Algoritmo / Direction & Algorithm: Loop507
 
