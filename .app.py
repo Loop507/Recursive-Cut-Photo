@@ -396,16 +396,16 @@ def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
     out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
 
 
-def resolve_reactive_opacity(s_dict, base_opacity, beat_val, beat_sync_on, auto_key):
+def resolve_reactive_opacity(s_dict, base_opacity, beat_gate_val, beat_sync_on, auto_key):
     """
     Con 'beat_react' attivo, beat_sync globale ON, e il moto automatico (auto_key)
-    spento, la striscia lampeggia a tempo: piena visibilità (base_opacity) esattamente
-    sul colpo, invisibile (0) altrimenti — uno strobe netto, non una dissolvenza.
-    La durata del lampo segue il 'Beat Decay' del genere/preset: decadimento rapido
-    = lampo breve, decadimento lento = lampo più lungo.
+    spento, la striscia lampeggia a tempo: piena visibilità (base_opacity) durante
+    la finestra 'on' del beat_gate, invisibile (0) altrimenti — uno strobe netto.
+    beat_gate è on/off puro derivato SOLO dal periodo del BPM (calcolato o manuale),
+    non dal 'Beat Decay' del preset genere: la durata del lampo non dipende dal genere.
     """
     if beat_sync_on and s_dict.get('beat_react', False) and not s_dict.get(auto_key, False):
-        return base_opacity if beat_val > 0.5 else 0.0
+        return base_opacity if beat_gate_val > 0.5 else 0.0
     return base_opacity
 
 
@@ -414,7 +414,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripe_reverse=False, audio_envelope_val=1.0,
                         stripe_offsets=None,
                         stripe_chroma=False, stripe_flash=False,
-                        beat_val=0.0, beat_sync_on=False,
+                        beat_val=0.0, beat_gate_val=0.0, beat_sync_on=False,
                         t=0.0, total_dur=10.0):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
@@ -422,7 +422,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
              blend_mode, opacity
     stripe_chroma:  aberrazione cromatica dentro la striscia
     stripe_flash:   striscia si spegne (mostra bg) sui beat forti
-    beat_val:       valore beat envelope corrente (0-1)
+    beat_val:       valore beat envelope corrente (0-1), dipende dal 'Beat Decay' del genere
+    beat_gate_val:  on/off puro (0 o 1) legato solo al periodo del BPM, per lo strobe
     beat_sync_on:   True se 'A tempo di musica' è attivo con audio caricato
     """
     if stripe_offsets is None:
@@ -469,7 +470,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         chroma_amt = int(s.get('chroma_amount', 6))
         blend_mode = s.get('blend_mode', 'Normal')
         opacity    = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
-        opacity    = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'move_random')
+        opacity    = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'move_random')
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
@@ -495,7 +496,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
-            opacity = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'auto_rotate')
+            opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_rotate')
             draw_lancetta(out, src_stripe, h, w,
                           s.get('cx', 50.0), s.get('cy', 50.0),
                           angle, length_pct,
@@ -508,7 +509,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                 radius = radius * (0.2 + 0.8 * audio_envelope_val)
             radius = resolve_reactive_val(s, radius, offset, 'auto_expand')
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
-            opacity = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'auto_expand')
+            opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_expand')
             draw_cerchio(out, src_stripe, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
                          radius, s.get('filled', True),
@@ -522,7 +523,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             if s.get('length_audio', False):
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
-            opacity = resolve_reactive_opacity(s, opacity, beat_val, beat_sync_on, 'auto_rotate')
+            opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_rotate')
             draw_striscia_ruotata(out, src_stripe, h, w,
                                   s.get('cx', 50.0), s.get('cy', 50.0),
                                   angle,
@@ -568,6 +569,7 @@ def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_
     result = {
         'audio_envelope': np.ones(total_f),
         'beat_envelope': np.zeros(total_f),
+        'beat_gate': np.zeros(total_f),
         'onset_envelope': np.zeros(total_f),
         'rhythm_envelope': None,
         'audio_peak': 0.0,
@@ -616,6 +618,15 @@ def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_
                 bf = int(bt * fps)
                 for df in range(min(int(fps * 0.5), total_f - bf)):
                     result['beat_envelope'][bf + df] = max(result['beat_envelope'][bf + df], decay_rate ** df)
+
+            # beat_gate: on/off netto per lo strobe, legato SOLO al periodo del BPM
+            # (non al 'Beat Decay' del preset genere, che invece modella beat_envelope sopra)
+            period = 60.0 / detected_bpm if detected_bpm > 0 else 0.5
+            on_frames = max(1, int(round(period * 0.25 * fps)))
+            for bt in beat_times:
+                bf = int(bt * fps)
+                for df in range(min(on_frames, total_f - bf)):
+                    result['beat_gate'][bf + df] = 1.0
 
         # --- ONSET DETECTION (ogni transiente, indipendente dal tempo) ---
         sensitivity = onset_sensitivity if onset_sensitivity is not None else (op / 100.0)
@@ -724,6 +735,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     # --- AUDIO ANALYSIS ---
     audio_envelope  = np.ones(total_f)
     beat_envelope   = np.zeros(total_f)
+    beat_gate       = np.zeros(total_f)
     onset_envelope  = np.zeros(total_f)
     rhythm_envelope = None
     audio_peak      = 0.0
@@ -739,6 +751,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         )
         audio_envelope  = audio_result['audio_envelope']
         beat_envelope   = audio_result['beat_envelope']
+        beat_gate       = audio_result['beat_gate']
         onset_envelope  = audio_result['onset_envelope']
         rhythm_envelope = audio_result['rhythm_envelope']
         audio_peak      = audio_result['audio_peak']
@@ -849,6 +862,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             _aenv = float(audio_envelope[f])
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
             _bval = float(beat_envelope[f])
+            _bgate = float(beat_gate[f])
 
             def _get_bg_slide(glitched_frame=None):
                 if stripe_use_render and glitched_frame is not None:
@@ -860,7 +874,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     out_frame = apply_stripe_window(_get_bg_slide(img_cur), img_cur, img_cur, h, w,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
-                                                    stripe_chroma, stripe_flash, _bval,
+                                                    stripe_chroma, stripe_flash, _bval, _bgate,
                                                     t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                 else:
                     out_frame = img_cur
@@ -883,7 +897,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         out_frame = apply_stripe_window(_get_bg_slide(glitched), base, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
-                                                        stripe_chroma, stripe_flash, _bval,
+                                                        stripe_chroma, stripe_flash, _bval, _bgate,
                                                         t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                     else:
                         out_frame = glitched
@@ -895,7 +909,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         out_frame = apply_stripe_window(_get_bg_slide(glitched), blend, glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
-                                                        stripe_chroma, stripe_flash, _bval,
+                                                        stripe_chroma, stripe_flash, _bval, _bgate,
                                                         t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                     else:
                         out_frame = glitched
@@ -1014,6 +1028,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
             _aenv = float(audio_envelope[f])
             _bval = float(beat_envelope[f])
+            _bgate = float(beat_gate[f])
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
 
             if orientation == "Nessun Effetto":
@@ -1027,7 +1042,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     return cv2.resize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
-                                            _aenv, _soff, stripe_chroma, stripe_flash, _bval,
+                                            _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None)),
                         (out_w, out_h))
                 return cv2.resize(pick(), (out_w, out_h))
@@ -1079,7 +1094,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
-                                            stripe_chroma, stripe_flash, _bval,
+                                            stripe_chroma, stripe_flash, _bval, _bgate,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
 
             # --- Effetti globali standalone (senza strisce selettive) ---
@@ -1348,7 +1363,7 @@ with c2:
                     if s_dict['move_random']:
                         s_dict['move_speed'] = st.slider("Velocità movimento", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"mbr_{i}",
-                        help="Autonomo: senza 'Movimento random', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti). Se 'Movimento random' è attivo, invece è il movimento ad accelerare sul beat.")
+                        help="Autonomo: senza 'Movimento random', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Movimento random' è attivo, invece è il movimento ad accelerare sul beat.")
                     s_dict['offset_length'] = float(st.slider("Offset dx/sx (%)", 0, 100, 50, key=f"oc_{i}"))
 
                 elif stripe_orient_i == "Striscia Ruotata":
@@ -1375,7 +1390,7 @@ with c2:
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"rbr_{i}",
-                        help="Autonomo: senza 'Rotazione automatica', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
+                        help="Autonomo: senza 'Rotazione automatica', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
 
                 elif stripe_orient_i == "Lancetta":
                     col_cx, col_cy = st.columns(2)
@@ -1400,7 +1415,7 @@ with c2:
                     if s_dict['auto_rotate']:
                         s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"lbr_{i}",
-                        help="Autonomo: senza 'Rotazione automatica', la lancetta resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
+                        help="Autonomo: senza 'Rotazione automatica', la lancetta resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
 
                 elif stripe_orient_i == "Cerchio":
                     col_cx, col_cy = st.columns(2)
@@ -1427,7 +1442,7 @@ with c2:
                     if s_dict.get('auto_expand'):
                         s_dict['expand_speed'] = st.slider("Velocità espansione (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
                     s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"cbr_{i}",
-                        help="Autonomo: senza 'Espansione ciclica', il cerchio resta fermo e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti). Se 'Espansione ciclica' è attiva, invece è l'espansione ad accelerare sul beat.")
+                        help="Autonomo: senza 'Espansione ciclica', il cerchio resta fermo e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Espansione ciclica' è attiva, invece è l'espansione ad accelerare sul beat.")
 
                 st.divider()
 
