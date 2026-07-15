@@ -570,6 +570,7 @@ def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_
         'audio_envelope': np.ones(total_f),
         'beat_envelope': np.zeros(total_f),
         'beat_gate': np.zeros(total_f),
+        'beat_phase': np.zeros(total_f),
         'onset_envelope': np.zeros(total_f),
         'rhythm_envelope': None,
         'audio_peak': 0.0,
@@ -627,6 +628,19 @@ def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_
                 bf = int(bt * fps)
                 for df in range(min(on_frames, total_f - bf)):
                     result['beat_gate'][bf + df] = 1.0
+
+            # beat_phase: quanti beat sono trascorsi, in modo continuo (non a scatti).
+            # Usata come "orologio musicale" per il movimento delle strisce sincronizzate:
+            # a 140 BPM avanza esattamente il doppio più veloce che a 70 BPM, sempre.
+            if len(beat_times) >= 2:
+                period_med = float(np.median(np.diff(beat_times)))
+                ext_times = np.concatenate(([beat_times[0] - period_med], beat_times, [beat_times[-1] + period_med]))
+                ext_idx = np.arange(-1, len(beat_times) + 1, dtype=float)
+                frame_times = np.arange(total_f) / fps
+                result['beat_phase'] = np.interp(frame_times, ext_times, ext_idx)
+            elif len(beat_times) == 1 and detected_bpm > 0:
+                frame_times = np.arange(total_f) / fps
+                result['beat_phase'] = (frame_times - beat_times[0]) / (60.0 / detected_bpm)
 
         # --- ONSET DETECTION (ogni transiente, indipendente dal tempo) ---
         sensitivity = onset_sensitivity if onset_sensitivity is not None else (op / 100.0)
@@ -736,6 +750,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     audio_envelope  = np.ones(total_f)
     beat_envelope   = np.zeros(total_f)
     beat_gate       = np.zeros(total_f)
+    beat_phase      = np.zeros(total_f)
     onset_envelope  = np.zeros(total_f)
     rhythm_envelope = None
     audio_peak      = 0.0
@@ -752,6 +767,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         audio_envelope  = audio_result['audio_envelope']
         beat_envelope   = audio_result['beat_envelope']
         beat_gate       = audio_result['beat_gate']
+        beat_phase      = audio_result['beat_phase']
         onset_envelope  = audio_result['onset_envelope']
         rhythm_envelope = audio_result['rhythm_envelope']
         audio_peak      = audio_result['audio_peak']
@@ -770,14 +786,16 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     if stripe_mode and stripes:
         rng = np.random.default_rng(42)
         t_arr = np.linspace(0, max_limit, total_f)
-        dt = 1.0 / fps
-        # tempo "deformato": accelera sui beat/onset invece di scorrere costante
-        beat_mult = 1.0 + beat_envelope * 3.0 + onset_envelope * 2.0
-        warped_t = np.cumsum(beat_mult) * dt
+        # orologio musicale: quanti beat sono trascorsi, in modo continuo.
+        # A 140 BPM avanza esattamente il doppio più veloce che a 70 BPM — non un'accelerazione
+        # approssimativa, ma un aggancio diretto e proporzionale al tempo reale del brano.
+        beat_clock = beat_phase
 
         def _ramp_or_pulse(s, cfg, base_t):
             """Rampa continua se il moto automatico (auto_key) è ON; altrimenti resta ferma
-            al valore base (l'eventuale pulsazione a tempo di beat la fa l'opacità, non la posizione)."""
+            al valore base. Se la striscia è anche 'Sincronizza al beat', base_t è l'orologio
+            musicale (beat_clock): la velocità impostata (spd) si intende allora 'per beat',
+            quindi raddoppiando il BPM il movimento raddoppia di velocità automaticamente."""
             base_val = s.get(cfg["base_key"], cfg["base_default"])
             if s.get(cfg["auto_key"], False):
                 spd = s.get(cfg["speed_key"], cfg["speed_default"])
@@ -790,7 +808,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         for s in stripes:
             s_orient = s.get('orientation', stripe_orientation)
             react = bool(s.get('beat_react', False)) and beat_sync and not slideshow_mode
-            base_t = warped_t if react else t_arr
+            base_t = beat_clock if react else t_arr
 
             if s_orient in STRIPE_MOTION_CONFIG:
                 traj = _ramp_or_pulse(s, STRIPE_MOTION_CONFIG[s_orient], base_t)
