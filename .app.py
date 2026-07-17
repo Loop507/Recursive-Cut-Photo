@@ -1297,7 +1297,7 @@ with c2:
 
     # ---- STRISCE SELETTIVE ----
     dur = st.session_state.dur_value  # disponibile per kf_ui prima di c3
-    stripe_mode = st.toggle("🎯 Strisce Selettive", value=False,
+    stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
         help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
     stripes            = []
@@ -1309,7 +1309,7 @@ with c2:
 
     if stripe_mode:
         stripe_orientation = st.radio("Orientamento strisce",
-            ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True,
+            ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True, key="stripe_orientation_g",
             help="Mix H+V: strisce pari=orizzontali, dispari=verticali")
 
         # scelta sfondo
@@ -1318,18 +1318,18 @@ with c2:
         if up_m2: bg_opts.append("Master 2")
         bg_opts.append("Calderone")
         bg_opts.append("Render")
-        stripe_bg = st.radio("🖼️ Sfondo", bg_opts, horizontal=True,
+        stripe_bg = st.radio("🖼️ Sfondo", bg_opts, horizontal=True, key="stripe_bg_g",
             help="Master 1/2 = foto ferma. Calderone = foto in movimento. Render = glitch principale come sfondo, strisce sopra.")
 
         col_tog1, col_tog2 = st.columns(2)
         with col_tog1:
-            stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False,
+            stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False, key="stripe_glitch_g",
                 help="OFF = striscia pulita. ON = glitchata.")
         with col_tog2:
-            stripe_reverse = st.toggle("🔄 Reverse", value=False,
+            stripe_reverse = st.toggle("🔄 Reverse", value=False, key="stripe_reverse_g",
                 help="Inverte: strisce ferme, tutto il resto Calderone.")
 
-        stripe_force_beat_react = st.toggle("🎵 Tutto a tempo", value=False,
+        stripe_force_beat_react = st.toggle("🎵 Tutto a tempo", value=False, key="stripe_force_beat_g",
             help="Forza 'Sincronizza al beat' su TUTTE le strisce, ignorando il toggle di ognuna. "
                  "Utile per accendere/spegnere in blocco senza doverle aprire una per una.")
 
@@ -1495,6 +1495,7 @@ with c2:
                 col_e1, col_e2 = st.columns(2)
                 with col_e1:
                     chroma_on = st.toggle("🌈 Chroma", value=False, key=f"ch_{i}")
+                    s_dict['chroma_on'] = chroma_on
                 with col_e2:
                     s_dict['flash'] = st.toggle("⚡ Flash beat", value=False, key=f"fl_{i}")
                 if chroma_on:
@@ -1686,16 +1687,68 @@ with c2:
             )
         with col_p2:
             uploaded_preset = st.file_uploader("📥 Carica preset", type=["json"], key="preset_upload")
-            if uploaded_preset:
+            if uploaded_preset and st.session_state.get("_last_preset_file") != uploaded_preset.file_id:
                 try:
                     loaded = json.load(uploaded_preset)
                     st.session_state.preset = loaded
-                    # Ripristina gli ID strisce in base al numero salvato nel preset
-                    n_loaded = len(loaded.get("stripes", []))
+                    st.session_state["_last_preset_file"] = uploaded_preset.file_id
+
+                    # --- Ripristina i toggle/radio globali (via le loro key esplicite) ---
+                    if "stripe_orientation" in loaded:
+                        st.session_state["stripe_orientation_g"] = loaded["stripe_orientation"]
+                    if "stripe_bg" in loaded:
+                        st.session_state["stripe_bg_g"] = loaded["stripe_bg"]
+                    if "stripe_glitch" in loaded:
+                        st.session_state["stripe_glitch_g"] = loaded["stripe_glitch"]
+                    if "stripe_reverse" in loaded:
+                        st.session_state["stripe_reverse_g"] = loaded["stripe_reverse"]
+                    st.session_state["stripe_mode_g"] = True  # riapri il pannello strisce
+
+                    # --- Ripristina gli ID strisce in base al numero salvato nel preset ---
+                    loaded_stripes = loaded.get("stripes", [])
+                    n_loaded = len(loaded_stripes)
                     if n_loaded > 0:
                         st.session_state.stripe_ids = list(range(n_loaded))
                         st.session_state.stripe_next_id = n_loaded
-                    st.success("Preset caricato — ricarica la pagina per applicarlo.")
+
+                    # --- Ripristina ogni striscia nei widget corrispondenti (per key) ---
+                    SHAPE_KEY_MAP = {
+                        "Orizzontale": {"center": "sc", "size": "ss", "length": "sl",
+                                        "length_audio": "la", "move_random": "mr", "move_speed": "ms",
+                                        "beat_react": "mbr", "offset_length": "oc"},
+                        "Verticale": {"center": "sc", "size": "ss", "length": "sl",
+                                      "length_audio": "la", "move_random": "mr", "move_speed": "ms",
+                                      "beat_react": "mbr", "offset_length": "oc"},
+                        "Striscia Ruotata": {"cx": "rcx", "cy": "rcy", "angle": "rang", "size": "rsp",
+                                             "length": "rl", "auto_rotate": "rar", "length_audio": "la",
+                                             "rotate_speed": "rrs", "beat_react": "rbr"},
+                        "Lancetta": {"cx": "lcx", "cy": "lcy", "angle": "lang", "length": "ll",
+                                     "size": "lt", "auto_rotate": "lar", "length_audio": "la",
+                                     "rotate_speed": "lrs", "beat_react": "lbr"},
+                        "Cerchio": {"cx": "ccx", "cy": "ccy", "radius": "cr", "size": "ct",
+                                    "filled": "cf", "length_audio": "la", "auto_expand": "ce",
+                                    "expand_speed": "ces", "beat_react": "cbr"},
+                    }
+                    COMMON_KEY_MAP = {"chroma_on": "ch", "flash": "fl", "chroma_amount": "ca",
+                                       "blend_mode": "bm"}
+
+                    for idx, s in enumerate(loaded_stripes):
+                        orient = s.get("orientation", "Orizzontale")
+                        st.session_state[f"so_{idx}"] = orient
+                        keymap = SHAPE_KEY_MAP.get(orient, SHAPE_KEY_MAP["Orizzontale"])
+                        for field, prefix in keymap.items():
+                            if field in s:
+                                st.session_state[f"{prefix}_{idx}"] = s[field]
+                        for field, prefix in COMMON_KEY_MAP.items():
+                            if field in s:
+                                st.session_state[f"{prefix}_{idx}"] = s[field]
+                        if "opacity" in s:
+                            st.session_state[f"op_{idx}"] = int(round(s["opacity"] * 100))
+                        if "keyframes" in s:
+                            st.session_state[f"kf_stripe_{idx}"] = s["keyframes"]
+
+                    st.success("Preset caricato!")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Errore preset: {e}")
 
