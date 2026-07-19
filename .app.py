@@ -294,7 +294,9 @@ def blend_patch(base, top, mode, opacity):
 
 
 def prepare_layer_asset(uploaded_file):
-    """Carica un livello PNG (con alpha) e lo ritorna come RGBA numpy alla risoluzione nativa."""
+    """Carica un'immagine livello (PNG con alpha, o JPG/JPEG) e la ritorna come RGBA numpy
+    alla risoluzione nativa. Se il formato non ha canale alpha (es. JPG), viene aggiunto
+    automaticamente opaco al 100%."""
     uploaded_file.seek(0)
     return np.array(Image.open(uploaded_file).convert("RGBA"))
 
@@ -356,6 +358,9 @@ def blend_layer(base, top_rgb, alpha, mode):
 def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total_dur=10.0):
     """
     Compone tutti i livelli attivi sopra 'frame', in ordine (1 sotto ... N in cima).
+    Ogni livello puo' essere un PNG caricato oppure il Calderone stesso ('type'='calderone'):
+    in questo caso si usa lo snapshot del frame corrente (gia' generato con le sue impostazioni
+    normali) come contenuto del livello, cosi' da poterlo impilare/blendare con altri livelli.
     Se 'beat_react' e' attivo, il livello pulsa in continuazione (opacita' e scala) a
     tempo di BPM: un'onda sinusoidale continua sulla fase del beat, non un keyframe
     manuale. La posizione (cx, cy) invece PUO' essere animata a keyframe (kf_get),
@@ -363,6 +368,7 @@ def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total
     """
     if not layers:
         return frame
+    calderone_rgb = frame  # snapshot del Calderone/Master di QUESTO frame, prima di ogni livello
     puls = 0.5 * (1.0 + np.sin(2.0 * np.pi * beat_phase_val))  # 0..1, un ciclo per beat
     out = frame
     for lyr in layers:
@@ -370,7 +376,12 @@ def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total
         scale   = lyr['base_scale']   * (1.0 - lyr['pulse_scale']   + lyr['pulse_scale']   * puls)
         cx = kf_get(lyr, 'cx', t, total_dur, lyr['cx'])
         cy = kf_get(lyr, 'cy', t, total_dur, lyr['cy'])
-        rgb_c, alpha_c = place_layer_on_canvas(lyr['rgba'], canvas_h, canvas_w, scale, cx, cy)
+        if lyr.get('type') == 'calderone':
+            alpha_full = np.full(calderone_rgb.shape[:2] + (1,), 255, dtype=np.uint8)
+            src_rgba = np.dstack([calderone_rgb, alpha_full])
+        else:
+            src_rgba = lyr['rgba']
+        rgb_c, alpha_c = place_layer_on_canvas(src_rgba, canvas_h, canvas_w, scale, cx, cy)
         out = blend_layer(out, rgb_c, alpha_c * opacity, lyr['blend_mode'])
     return out
 
@@ -823,13 +834,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     h, w = pool_imgs[0].shape[:2]
 
-    # --- LIVELLI (stile Photoshop): PNG con alpha, pulsano a tempo di BPM ---
+    # --- LIVELLI (stile Photoshop): PNG con alpha o il Calderone stesso, pulsano a tempo di BPM ---
     layers_prepared = []
     if layers:
         for lyr in layers:
-            if lyr.get('file') is not None:
-                layers_prepared.append({
-                    'rgba':          prepare_layer_asset(lyr['file']),
+            is_calderone = (lyr.get('type') == 'calderone')
+            if is_calderone or lyr.get('file') is not None:
+                entry = {
+                    'type':          'calderone' if is_calderone else 'png',
                     'blend_mode':    lyr.get('blend_mode', 'Normal'),
                     'base_opacity':  lyr.get('base_opacity', 0.8),
                     'pulse_opacity': lyr.get('pulse_opacity', 0.4),
@@ -838,7 +850,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     'cx':            lyr.get('cx', 50.0),
                     'cy':            lyr.get('cy', 50.0),
                     'keyframes':     lyr.get('keyframes', {}),
-                })
+                }
+                if not is_calderone:
+                    entry['rgba'] = prepare_layer_asset(lyr['file'])
+                layers_prepared.append(entry)
 
     img_m1_half = load_img_half(up_m1) if up_m1 else None
     img_m2_half = load_img_half(up_m2) if up_m2 else None
@@ -1907,7 +1922,7 @@ with c2:
 
     st.divider()
     st.subheader("🖼️ Livelli")
-    st.caption("PNG sovrapposti al Calderone, stile Photoshop. Opacità e scala pulsano "
+    st.caption("Foto (PNG) o il Calderone stesso, impilati stile Photoshop. Opacità e scala pulsano "
                "in continuazione a tempo del BPM (attivabile/disattivabile per livello). "
                "La posizione X/Y può anche essere animata con keyframe.")
 
@@ -1931,9 +1946,24 @@ with c2:
                 _to_delete_layer = li
                 continue
 
-            l_file = st.file_uploader("PNG (con trasparenza)", type=["png"], key=f"lfile_{li}")
+            l_source = st.radio("Sorgente livello", ["📁 Foto (PNG)", "🌀 Calderone"],
+                horizontal=True, key=f"lsrc_{li}",
+                help="Calderone: usa l'output del Calderone (con le sue impostazioni normali) "
+                     "come contenuto di questo livello — così puoi impilarlo, dargli un blend "
+                     "mode/opacità/posizione propri, insieme ad altre foto sopra o sotto.")
 
-            l_dict = {'file': l_file}
+            if l_source == "📁 Foto (PNG)":
+                l_file = st.file_uploader("Immagine (PNG con trasparenza, o JPG/JPEG)",
+                    type=["png", "jpg", "jpeg"], key=f"lfile_{li}",
+                    help="PNG con alpha: le zone trasparenti restano trasparenti. "
+                         "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
+                         "(l'opacità/pulsazione del livello funziona comunque).")
+                l_dict = {'file': l_file, 'type': 'png'}
+            else:
+                l_dict = {'file': None, 'type': 'calderone'}
+                st.caption("Il Calderone gira sempre con le sue impostazioni normali — qui scegli "
+                           "solo come inserirlo nella pila dei livelli.")
+
             col_lb1, col_lb2 = st.columns(2)
             with col_lb1:
                 l_dict['blend_mode'] = st.selectbox("Blend mode",
@@ -2020,17 +2050,23 @@ with c2:
 
     with layer_preview_slot:
         st.caption("🔍 Anteprima livelli")
-        active_layers = [l for l in layers if l.get('file') is not None]
+        active_layers   = [l for l in layers if l.get('type') == 'png' and l.get('file') is not None]
+        calderone_layers = [l for l in layers if l.get('type') == 'calderone']
         lp_choices = []
         lp_files   = {}
         if up_m1: lp_choices.append("Master 1");             lp_files["Master 1"] = up_m1
         if up_m2: lp_choices.append("Master 2");             lp_files["Master 2"] = up_m2
         if up_t:  lp_choices.append("Prima foto Calderone"); lp_files["Prima foto Calderone"] = up_t[0]
 
+        if calderone_layers:
+            st.caption("🌀 Livello Calderone presente: si vede solo nel render, "
+                       "l'anteprima statica qui sotto mostra solo i livelli foto.")
+
         if not lp_choices:
             st.caption("Carica almeno una foto (Master o Calderone) per vedere l'anteprima.")
         elif not active_layers:
-            st.caption("Carica un PNG in un livello per vedere l'anteprima.")
+            if not calderone_layers:
+                st.caption("Carica un PNG in un livello per vedere l'anteprima.")
         else:
             lprev_sel = st.selectbox("Anteprima su", lp_choices,
                 label_visibility="collapsed", key="layer_prev_sel")
