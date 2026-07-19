@@ -1406,12 +1406,11 @@ Direction & Algorithm: Loop507
 # =====================================================================
 st.title("Recursive-Cut-Photo by Loop507 🔪")
 
-# dur viene definito in c3 ma serve in c2 (KF UI) — leggo da session_state con default
-if 'dur_value' not in st.session_state:
-    st.session_state.dur_value = 10
-# stesso discorso per il formato: serve in c2 (anteprima livelli) ma si sceglie in c3
-if 'format_value' not in st.session_state:
-    st.session_state.format_value = "16:9 (Orizzontale)"
+# dur/formato si scelgono in c3 ma servono in c2 (KF UI, anteprima livelli) — leggo
+# direttamente la key del widget (con .get/fallback, MAI un'assegnazione manuale: Streamlit
+# solleva un errore se una key di un widget con valore di default viene pre-impostata a mano).
+# Streamlit aggiorna la key PRIMA di rieseguire lo script, quindi il valore letto qui è
+# già quello corrente scelto dall'utente, non un passo indietro.
 
 c1, c2, c3 = st.columns([1, 1.2, 1])
 
@@ -1453,8 +1452,8 @@ with c2:
     st.divider()
 
     # ---- STRISCE SELETTIVE ----
-    dur = st.session_state.dur_value  # disponibile per kf_ui prima di c3
-    fmt_value = st.session_state.format_value  # disponibile per l'anteprima livelli prima di c3
+    dur = st.session_state.get("dur_input", 10)                          # prima di c3
+    fmt_value = st.session_state.get("format_select", "16:9 (Orizzontale)")  # prima di c3
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
         help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
@@ -2139,10 +2138,9 @@ with c2:
 
 with c3:
     st.subheader("🎬 Rendering")
-    fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
-    st.session_state.format_value = fmt
-    dur = st.number_input("Durata (sec)", 1, 300, 10)
-    st.session_state.dur_value = int(dur)
+    fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"],
+        key="format_select")
+    dur = st.number_input("Durata (sec)", 1, 300, 10, key="dur_input")
 
     st.divider()
 
