@@ -301,6 +301,24 @@ def prepare_layer_asset(uploaded_file):
     return np.array(Image.open(uploaded_file).convert("RGBA"))
 
 
+def cover_crop(img_rgba, target_w, target_h):
+    """Ritaglia (center-crop) l'immagine per adattarla all'aspect ratio del canvas —
+    stessa logica di resize_to_format usata dal Calderone: riempie tutto il formato,
+    nessuna barra vuota, tagliando i bordi in eccesso invece di rimpicciolire."""
+    ih, iw = img_rgba.shape[:2]
+    aspect_target = target_w / target_h
+    aspect_img = iw / ih
+    if aspect_img > aspect_target:
+        new_w = max(1, int(ih * aspect_target))
+        start_x = (iw - new_w) // 2
+        img_rgba = img_rgba[:, start_x:start_x + new_w]
+    else:
+        new_h = max(1, int(iw / aspect_target))
+        start_y = (ih - new_h) // 2
+        img_rgba = img_rgba[start_y:start_y + new_h, :]
+    return img_rgba
+
+
 def place_layer_on_canvas(layer_rgba, canvas_h, canvas_w, scale, cx_pct, cy_pct):
     """
     Ridimensiona il livello (contain-fit dentro il canvas, moltiplicato per 'scale')
@@ -379,6 +397,8 @@ def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total
         if lyr.get('type') == 'calderone':
             alpha_full = np.full(calderone_rgb.shape[:2] + (1,), 255, dtype=np.uint8)
             src_rgba = np.dstack([calderone_rgb, alpha_full])
+        elif lyr.get('fit_mode') == 'cover':
+            src_rgba = cover_crop(lyr['rgba'], canvas_w, canvas_h)
         else:
             src_rgba = lyr['rgba']
         rgb_c, alpha_c = place_layer_on_canvas(src_rgba, canvas_h, canvas_w, scale, cx, cy)
@@ -842,6 +862,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             if is_calderone or lyr.get('file') is not None:
                 entry = {
                     'type':          'calderone' if is_calderone else 'png',
+                    'fit_mode':      lyr.get('fit_mode', 'cover'),
                     'blend_mode':    lyr.get('blend_mode', 'Normal'),
                     'base_opacity':  lyr.get('base_opacity', 0.8),
                     'pulse_opacity': lyr.get('pulse_opacity', 0.4),
@@ -1958,7 +1979,15 @@ with c2:
                     help="PNG con alpha: le zone trasparenti restano trasparenti. "
                          "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
                          "(l'opacità/pulsazione del livello funziona comunque).")
-                l_dict = {'file': l_file, 'type': 'png'}
+                l_fit = st.radio("Adattamento al formato", 
+                    ["🔲 Riempi (ritaglia, come il Calderone)", "🖼️ Contieni (mostra tutta l'immagine)"],
+                    horizontal=True, key=f"lfit_{li}",
+                    help="Riempi: ritaglia i bordi in eccesso per coprire tutto il fotogramma, "
+                         "senza barre vuote — stesso comportamento del Calderone. "
+                         "Contieni: mostra l'immagine intera, può lasciare bordi trasparenti "
+                         "se le proporzioni non coincidono con il formato video (utile per loghi/PNG con trasparenza).")
+                l_dict = {'file': l_file, 'type': 'png',
+                          'fit_mode': 'cover' if l_fit.startswith("🔲") else 'contain'}
             else:
                 l_dict = {'file': None, 'type': 'calderone'}
                 st.caption("Il Calderone gira sempre con le sue impostazioni normali — qui scegli "
@@ -2080,6 +2109,7 @@ with c2:
 
             preview_layers = [{
                 'rgba':          prepare_layer_asset(l['file']),
+                'fit_mode':      l.get('fit_mode', 'cover'),
                 'blend_mode':    l['blend_mode'],
                 'base_opacity':  l['base_opacity'],
                 'pulse_opacity': 0.0,
