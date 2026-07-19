@@ -1954,14 +1954,20 @@ with c2:
     with layer_preview_slot:
         st.caption("🔍 Anteprima livelli")
         active_layers = [l for l in layers if l.get('file') is not None]
-        if not prev_choices:
+        lp_choices = []
+        lp_files   = {}
+        if up_m1: lp_choices.append("Master 1");             lp_files["Master 1"] = up_m1
+        if up_m2: lp_choices.append("Master 2");             lp_files["Master 2"] = up_m2
+        if up_t:  lp_choices.append("Prima foto Calderone"); lp_files["Prima foto Calderone"] = up_t[0]
+
+        if not lp_choices:
             st.caption("Carica almeno una foto (Master o Calderone) per vedere l'anteprima.")
         elif not active_layers:
             st.caption("Carica un PNG in un livello per vedere l'anteprima.")
         else:
-            lprev_sel = st.selectbox("Anteprima su", prev_choices,
+            lprev_sel = st.selectbox("Anteprima su", lp_choices,
                 label_visibility="collapsed", key="layer_prev_sel")
-            lpf = prev_files[lprev_sel]
+            lpf = lp_files[lprev_sel]
             lpf.seek(0)
             lprev_img = np.array(Image.open(lpf).convert("RGB"))
             lph, lpw  = lprev_img.shape[:2]
