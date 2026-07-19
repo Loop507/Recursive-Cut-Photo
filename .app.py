@@ -1971,20 +1971,20 @@ with c2:
                 continue
 
             l_source = st.radio("Sorgente livello", ["📁 Foto (PNG)", "🌀 Calderone"],
-                horizontal=True, key=f"lsrc_{li}",
+                horizontal=True, key=f"lyr_src_{li}",
                 help="Calderone: usa l'output del Calderone (con le sue impostazioni normali) "
                      "come contenuto di questo livello — così puoi impilarlo, dargli un blend "
                      "mode/opacità/posizione propri, insieme ad altre foto sopra o sotto.")
 
             if l_source == "📁 Foto (PNG)":
                 l_file = st.file_uploader("Immagine (PNG con trasparenza, o JPG/JPEG)",
-                    type=["png", "jpg", "jpeg"], key=f"lfile_{li}",
+                    type=["png", "jpg", "jpeg"], key=f"lyr_file_{li}",
                     help="PNG con alpha: le zone trasparenti restano trasparenti. "
                          "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
                          "(l'opacità/pulsazione del livello funziona comunque).")
                 l_fit = st.radio("Adattamento al formato", 
                     ["🔲 Riempi (ritaglia, come il Calderone)", "🖼️ Contieni (mostra tutta l'immagine)"],
-                    horizontal=True, key=f"lfit_{li}",
+                    horizontal=True, key=f"lyr_fit_{li}",
                     help="Riempi: ritaglia i bordi in eccesso per coprire tutto il fotogramma, "
                          "senza barre vuote — stesso comportamento del Calderone. "
                          "Contieni: mostra l'immagine intera, può lasciare bordi trasparenti "
@@ -1999,23 +1999,23 @@ with c2:
             col_lb1, col_lb2 = st.columns(2)
             with col_lb1:
                 l_dict['blend_mode'] = st.selectbox("Blend mode",
-                    ["Normal", "Screen", "Multiply", "Difference"], key=f"lbm_{li}")
+                    ["Normal", "Screen", "Multiply", "Difference"], key=f"lyr_bm_{li}")
             with col_lb2:
-                l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lsc_{li}",
+                l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lyr_sc_{li}",
                     help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
 
-            l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lop_{li}")
+            l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lyr_op_{li}")
 
-            l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lbr_{li}",
+            l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lyr_br_{li}",
                 help="ON: il livello pulsa (opacità/scala) a tempo del BPM. OFF: resta fisso ai valori base.")
 
             if l_dict['beat_react']:
                 col_lp1, col_lp2 = st.columns(2)
                 with col_lp1:
-                    l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lpo_{li}",
+                    l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lyr_po_{li}",
                         help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
                 with col_lp2:
-                    l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lps_{li}",
+                    l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lyr_ps_{li}",
                         help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
             else:
                 l_dict['pulse_opacity'] = 0.0
@@ -2023,10 +2023,10 @@ with c2:
 
             col_lx, col_ly = st.columns(2)
             with col_lx:
-                l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lcx_{li}",
+                l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lyr_cx_{li}",
                     help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
             with col_ly:
-                l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lcy_{li}",
+                l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lyr_cy_{li}",
                     help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
 
             st.divider()
@@ -2039,10 +2039,10 @@ with c2:
 
             col_kt, col_kb = st.columns([3, 1])
             with col_kt:
-                kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lkft_{li}")
+                kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lyr_kft_{li}")
             with col_kb:
                 st.write("")
-                if st.button("📍 Crea keyframe qui", key=f"lkfadd_{li}"):
+                if st.button("📍 Crea keyframe qui", key=f"lyr_kfadd_{li}"):
                     t_r = round(float(kf_t_cur), 2)
                     kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - t_r) > 1e-6] + \
                                       [{'t': t_r, 'v': l_dict['cx']}]
@@ -2062,7 +2062,7 @@ with c2:
                     with r1: st.caption(f"t = **{tt:.1f}s**")
                     with r2: st.caption(f"X {xv:.0f}% · Y {yv:.0f}%")
                     with r3:
-                        if st.button("✕", key=f"lkfdel_{li}_{tt}"):
+                        if st.button("✕", key=f"lyr_kfdel_{li}_{tt}"):
                             _to_del_t = tt
                 if _to_del_t is not None:
                     kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - _to_del_t) > 1e-6]
