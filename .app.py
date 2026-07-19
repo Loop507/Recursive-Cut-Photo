@@ -1409,6 +1409,9 @@ st.title("Recursive-Cut-Photo by Loop507 🔪")
 # dur viene definito in c3 ma serve in c2 (KF UI) — leggo da session_state con default
 if 'dur_value' not in st.session_state:
     st.session_state.dur_value = 10
+# stesso discorso per il formato: serve in c2 (anteprima livelli) ma si sceglie in c3
+if 'format_value' not in st.session_state:
+    st.session_state.format_value = "16:9 (Orizzontale)"
 
 c1, c2, c3 = st.columns([1, 1.2, 1])
 
@@ -1451,6 +1454,7 @@ with c2:
 
     # ---- STRISCE SELETTIVE ----
     dur = st.session_state.dur_value  # disponibile per kf_ui prima di c3
+    fmt_value = st.session_state.format_value  # disponibile per l'anteprima livelli prima di c3
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
         help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
@@ -2101,7 +2105,16 @@ with c2:
                 label_visibility="collapsed", key="layer_prev_sel")
             lpf = lp_files[lprev_sel]
             lpf.seek(0)
-            lprev_img = np.array(Image.open(lpf).convert("RGB"))
+            lprev_img_full = np.array(Image.open(lpf).convert("RGB"))
+
+            _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
+                         "9:16 (Verticale)":  (720, 1280),
+                         "1:1 (Quadrato)":    (1080, 1080)}
+            _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
+            st.caption(f"Formato: {fmt_value}")
+            # stesso ritaglio "cover" che userà davvero il render, per mostrare il formato corretto
+            lprev_img = cover_crop(lprev_img_full, _fw, _fh)
+
             lph, lpw  = lprev_img.shape[:2]
             lscale    = 220 / max(lph, lpw)
             ldw, ldh  = int(lpw * lscale), int(lph * lscale)
@@ -2127,6 +2140,7 @@ with c2:
 with c3:
     st.subheader("🎬 Rendering")
     fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
+    st.session_state.format_value = fmt
     dur = st.number_input("Durata (sec)", 1, 300, 10)
     st.session_state.dur_value = int(dur)
 
