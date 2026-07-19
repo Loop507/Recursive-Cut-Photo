@@ -104,13 +104,15 @@ def kf_get(s_dict, param, t, total_dur, default):
     return val
 
 
-def kf_expander_ui(stripe_id, dur, params_meta):
+def kf_expander_ui(stripe_id, dur, params_meta, prefix="stripe", label="Keyframe striscia"):
     """
-    Un solo expander per striscia — tabella keyframe unificata.
+    Un solo expander per striscia (o livello) — tabella keyframe unificata.
     params_meta: lista di dict { param, label, min_v, max_v, default_v, step_v }
     Ritorna dict { param: [{t, v}, ...] }
+    'prefix' distingue lo state_key (es. 'stripe' vs 'layer') per evitare collisioni
+    quando strisce e livelli condividono lo stesso indice numerico.
     """
-    state_key = f"kf_stripe_{stripe_id}"
+    state_key = f"kf_{prefix}_{stripe_id}"
     if state_key not in st.session_state:
         st.session_state[state_key] = {}
     kf_state = st.session_state[state_key]
@@ -121,28 +123,28 @@ def kf_expander_ui(stripe_id, dur, params_meta):
     param_map    = {m['param']: m for m in params_meta}
 
     total_kf = sum(len(v) for v in kf_state.values())
-    exp_label = f"\U0001f3ac Keyframe striscia {stripe_id+1}" + (f"  \u2014 {total_kf} KF attivi" if total_kf else "")
+    exp_label = f"\U0001f3ac {label} {stripe_id+1}" + (f"  \u2014 {total_kf} KF attivi" if total_kf else "")
 
     with st.expander(exp_label, expanded=False):
-        st.caption("Imposta la striscia con gli slider sopra, poi aggiungi qui i cambiamenti nel tempo.")
+        st.caption("Imposta i valori con gli slider sopra, poi aggiungi qui i cambiamenti nel tempo.")
         ca, cb, cc, cd = st.columns([2, 2, 2, 1])
         with ca:
-            sel_label = st.selectbox("Parametro", param_labels, key=f"kf_sel_{stripe_id}")
+            sel_label = st.selectbox("Parametro", param_labels, key=f"kf_sel_{prefix}_{stripe_id}")
             sel_param = next(m['param'] for m in params_meta if m['label'] == sel_label)
             meta = param_map[sel_param]
         with cb:
             new_t = st.number_input("t (sec)", min_value=0.0, max_value=float(max(dur, 1)),
-                                    value=0.0, step=0.5, key=f"kf_t_{stripe_id}")
+                                    value=0.0, step=0.5, key=f"kf_t_{prefix}_{stripe_id}")
         with cc:
             new_v = st.number_input("valore", min_value=float(meta['min_v']),
                                     max_value=float(meta['max_v']),
                                     value=float(meta['default_v']),
                                     step=float(meta.get('step_v', 1)),
-                                    key=f"kf_v_{stripe_id}")
+                                    key=f"kf_v_{prefix}_{stripe_id}")
         with cd:
             st.write("")
             st.write("")
-            if st.button("\u2795 Aggiungi", key=f"kf_add_{stripe_id}"):
+            if st.button("\u2795 Aggiungi", key=f"kf_add_{prefix}_{stripe_id}"):
                 kf_state[sel_param].append({'t': round(float(new_t), 2), 'v': round(float(new_v), 4)})
                 kf_state[sel_param].sort(key=lambda k: k['t'])
                 st.session_state[state_key] = kf_state
@@ -160,14 +162,14 @@ def kf_expander_ui(stripe_id, dur, params_meta):
                 with r2: st.caption(lbl)
                 with r3: st.caption(f"\u2192 {kf['v']:.2f}")
                 with r4:
-                    if st.button("\u2715", key=f"kf_del_{stripe_id}_{p}_{ki}"):
+                    if st.button("\u2715", key=f"kf_del_{prefix}_{stripe_id}_{p}_{ki}"):
                         to_del = (p, ki)
             if to_del:
                 p, ki = to_del
                 kf_state[p].pop(ki)
                 st.session_state[state_key] = kf_state
         else:
-            st.caption("\u2014 Nessun KF: la striscia usa i valori degli slider per tutta la durata.")
+            st.caption("\u2014 Nessun KF: si usano i valori degli slider per tutta la durata.")
 
     return kf_state
 
@@ -351,11 +353,13 @@ def blend_layer(base, top_rgb, alpha, mode):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w):
+def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total_dur=10.0):
     """
     Compone tutti i livelli attivi sopra 'frame', in ordine (1 sotto ... N in cima).
-    Ogni livello "vive" pulsando in continuazione (opacita' e scala) a tempo di BPM:
-    un'onda sinusoidale continua sulla fase del beat, non un keyframe manuale.
+    Se 'beat_react' e' attivo, il livello pulsa in continuazione (opacita' e scala) a
+    tempo di BPM: un'onda sinusoidale continua sulla fase del beat, non un keyframe
+    manuale. La posizione (cx, cy) invece PUO' essere animata a keyframe (kf_get),
+    indipendentemente dalla pulsazione.
     """
     if not layers:
         return frame
@@ -364,7 +368,9 @@ def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w):
     for lyr in layers:
         opacity = lyr['base_opacity'] * (1.0 - lyr['pulse_opacity'] + lyr['pulse_opacity'] * puls)
         scale   = lyr['base_scale']   * (1.0 - lyr['pulse_scale']   + lyr['pulse_scale']   * puls)
-        rgb_c, alpha_c = place_layer_on_canvas(lyr['rgba'], canvas_h, canvas_w, scale, lyr['cx'], lyr['cy'])
+        cx = kf_get(lyr, 'cx', t, total_dur, lyr['cx'])
+        cy = kf_get(lyr, 'cy', t, total_dur, lyr['cy'])
+        rgb_c, alpha_c = place_layer_on_canvas(lyr['rgba'], canvas_h, canvas_w, scale, cx, cy)
         out = blend_layer(out, rgb_c, alpha_c * opacity, lyr['blend_mode'])
     return out
 
@@ -831,6 +837,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     'pulse_scale':   lyr.get('pulse_scale', 0.1),
                     'cx':            lyr.get('cx', 50.0),
                     'cy':            lyr.get('cy', 50.0),
+                    'keyframes':     lyr.get('keyframes', {}),
                 })
 
     img_m1_half = load_img_half(up_m1) if up_m1 else None
@@ -965,9 +972,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     ev = int(75 * (1 - c_n) + 2)
 
     # --- finalizzazione frame: livelli PNG sopra il Calderone, poi resize export ---
-    def _finalize(raw_frame, f):
+    def _finalize(raw_frame, f, t):
         if layers_prepared:
-            raw_frame = apply_layers(raw_frame, layers_prepared, float(beat_phase[f]), h, w)
+            raw_frame = apply_layers(raw_frame, layers_prepared, float(beat_phase[f]), h, w, t, max_limit)
         return cv2.resize(raw_frame, (out_w, out_h))
 
     # =========================================================
@@ -1014,7 +1021,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                     t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                 else:
                     out_frame = img_cur
-                return _finalize(out_frame, f)
+                return _finalize(out_frame, f, t)
             else:
                 trans_prog = (cycle_pos - slide_hold) / max(slide_trans, 0.001)
                 trans_prog = np.clip(trans_prog, 0.0, 1.0)
@@ -1050,7 +1057,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     else:
                         out_frame = glitched
 
-                return _finalize(out_frame, f)
+                return _finalize(out_frame, f, t)
 
         clip = VideoClip(make_frame_slideshow, duration=max_limit)
 
@@ -1070,7 +1077,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 if prog <= m1_end:
                     _ramp_m1 = np.clip(prog / m1_end if m1_end > 0.001 else 1.0, 0.0, 1.0)
                     if _ramp_m1 < 0.02:
-                        return _finalize(img_m1, f)
+                        return _finalize(img_m1, f, t)
                     _m1_prob = 1.0 - _ramp_m1
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
@@ -1087,7 +1094,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     _span_m2 = 1.0 - m2_start if m2_start < 0.999 else 1e-6
                     _ramp_m2 = np.clip((prog - m2_start) / _span_m2, 0.0, 1.0)
                     if _ramp_m2 > 0.98:
-                        return _finalize(img_m2, f)
+                        return _finalize(img_m2, f, t)
                     _m2_prob = _ramp_m2
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
@@ -1180,8 +1187,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None)),
-                        f)
-                return _finalize(pick(), f)
+                        f, t)
+                return _finalize(pick(), f, t)
 
             # --- Calderone corrente (foto pulita, per la striscia originale) ---
             calder_clean = pick()
@@ -1241,7 +1248,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     alpha = global_flash_intensity / 100.0
                     frame = (calder_clean * (1.0 - alpha) + frame * (1.0 - alpha)).astype(np.uint8)
 
-            result = _finalize(frame, f)
+            result = _finalize(frame, f, t)
             if f == 0 and 'preview_frame' not in st.session_state:
                 st.session_state.preview_frame = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
             return result
@@ -1895,8 +1902,9 @@ with c2:
 
     st.divider()
     st.subheader("🖼️ Livelli")
-    st.caption("PNG sovrapposti al Calderone, stile Photoshop. Ogni livello pulsa "
-               "in continuazione (opacità/scala) a tempo del BPM selezionato — nessun keyframe manuale.")
+    st.caption("PNG sovrapposti al Calderone, stile Photoshop. Opacità e scala pulsano "
+               "in continuazione a tempo del BPM (attivabile/disattivabile per livello). "
+               "La posizione X/Y può anche essere animata con keyframe.")
 
     col_laddd, col_lninfo = st.columns([1, 2])
     with col_laddd:
@@ -1929,21 +1937,38 @@ with c2:
                 l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lsc_{li}",
                     help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
 
-            col_lp1, col_lp2 = st.columns(2)
-            with col_lp1:
-                l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lop_{li}")
-            with col_lp2:
-                l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lpo_{li}",
-                    help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
+            l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lop_{li}")
 
-            l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lps_{li}",
-                help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
+            l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lbr_{li}",
+                help="ON: il livello pulsa (opacità/scala) a tempo del BPM. OFF: resta fisso ai valori base.")
+
+            if l_dict['beat_react']:
+                col_lp1, col_lp2 = st.columns(2)
+                with col_lp1:
+                    l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lpo_{li}",
+                        help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
+                with col_lp2:
+                    l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lps_{li}",
+                        help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
+            else:
+                l_dict['pulse_opacity'] = 0.0
+                l_dict['pulse_scale']   = 0.0
 
             col_lx, col_ly = st.columns(2)
             with col_lx:
                 l_dict['cx'] = float(st.slider("Posizione X (%)", 0, 100, 50, key=f"lcx_{li}"))
             with col_ly:
                 l_dict['cy'] = float(st.slider("Posizione Y (%)", 0, 100, 50, key=f"lcy_{li}"))
+
+            st.divider()
+            _layer_kf_meta = [
+                {'param': 'cx', 'label': 'Posizione X (%)', 'min_v': 0, 'max_v': 100,
+                 'default_v': l_dict['cx'], 'step_v': 1},
+                {'param': 'cy', 'label': 'Posizione Y (%)', 'min_v': 0, 'max_v': 100,
+                 'default_v': l_dict['cy'], 'step_v': 1},
+            ]
+            l_dict['keyframes'] = kf_expander_ui(li, dur, _layer_kf_meta,
+                prefix="layer", label="Keyframe livello")
 
             layers.append(l_dict)
 
