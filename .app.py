@@ -974,7 +974,12 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     # --- finalizzazione frame: livelli PNG sopra il Calderone, poi resize export ---
     def _finalize(raw_frame, f, t):
         if layers_prepared:
-            raw_frame = apply_layers(raw_frame, layers_prepared, float(beat_phase[f]), h, w, t, max_limit)
+            # canvas = dimensioni REALI del frame corrente, non h/w fissi: img_m1/img_m2
+            # sono a piena risoluzione (out_w x out_h), mentre il resto della pipeline
+            # (pick(), stripe, glitch) lavora a mezza risoluzione (h x w) — usare h/w fissi
+            # qui avrebbe causato un mismatch di shape (crash) sui frame Master 1/2.
+            ch, cw = raw_frame.shape[:2]
+            raw_frame = apply_layers(raw_frame, layers_prepared, float(beat_phase[f]), ch, cw, t, max_limit)
         return cv2.resize(raw_frame, (out_w, out_h))
 
     # =========================================================
@@ -1956,9 +1961,11 @@ with c2:
 
             col_lx, col_ly = st.columns(2)
             with col_lx:
-                l_dict['cx'] = float(st.slider("Posizione X (%)", 0, 100, 50, key=f"lcx_{li}"))
+                l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lcx_{li}",
+                    help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
             with col_ly:
-                l_dict['cy'] = float(st.slider("Posizione Y (%)", 0, 100, 50, key=f"lcy_{li}"))
+                l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lcy_{li}",
+                    help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
 
             st.divider()
             st.caption("📍 Keyframe posizione — sposta X/Y sopra, scegli il secondo, poi registra il punto.")
