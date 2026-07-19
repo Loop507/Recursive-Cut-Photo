@@ -1375,6 +1375,7 @@ with c1:
 
     st.divider()
     stripe_preview_slot = st.container()
+    layer_preview_slot = st.container()
 
 with c2:
     st.subheader("✂️ Controllo")
@@ -1949,6 +1950,40 @@ with c2:
     if _to_delete_layer is not None:
         st.session_state.layer_ids.remove(_to_delete_layer)
         st.rerun()
+
+    with layer_preview_slot:
+        st.caption("🔍 Anteprima livelli")
+        active_layers = [l for l in layers if l.get('file') is not None]
+        if not prev_choices:
+            st.caption("Carica almeno una foto (Master o Calderone) per vedere l'anteprima.")
+        elif not active_layers:
+            st.caption("Carica un PNG in un livello per vedere l'anteprima.")
+        else:
+            lprev_sel = st.selectbox("Anteprima su", prev_choices,
+                label_visibility="collapsed", key="layer_prev_sel")
+            lpf = prev_files[lprev_sel]
+            lpf.seek(0)
+            lprev_img = np.array(Image.open(lpf).convert("RGB"))
+            lph, lpw  = lprev_img.shape[:2]
+            lscale    = 220 / max(lph, lpw)
+            ldw, ldh  = int(lpw * lscale), int(lph * lscale)
+            lprev_small = cv2.resize(lprev_img, (ldw, ldh))
+
+            preview_layers = [{
+                'rgba':          prepare_layer_asset(l['file']),
+                'blend_mode':    l['blend_mode'],
+                'base_opacity':  l['base_opacity'],
+                'pulse_opacity': 0.0,
+                'base_scale':    l['base_scale'],
+                'pulse_scale':   0.0,
+                'cx':            l['cx'],
+                'cy':            l['cy'],
+            } for l in active_layers]
+
+            preview_out = apply_layers(lprev_small, preview_layers, 0.0, ldh, ldw)
+            st.image(preview_out,
+                caption="Anteprima statica (opacità/scala base) — la pulsazione a BPM si vede solo nel render finale",
+                use_container_width=True)
 
 with c3:
     st.subheader("🎬 Rendering")
