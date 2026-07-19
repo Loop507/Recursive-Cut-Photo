@@ -1961,14 +1961,49 @@ with c2:
                 l_dict['cy'] = float(st.slider("Posizione Y (%)", 0, 100, 50, key=f"lcy_{li}"))
 
             st.divider()
-            _layer_kf_meta = [
-                {'param': 'cx', 'label': 'Posizione X (%)', 'min_v': 0, 'max_v': 100,
-                 'default_v': l_dict['cx'], 'step_v': 1},
-                {'param': 'cy', 'label': 'Posizione Y (%)', 'min_v': 0, 'max_v': 100,
-                 'default_v': l_dict['cy'], 'step_v': 1},
-            ]
-            l_dict['keyframes'] = kf_expander_ui(li, dur, _layer_kf_meta,
-                prefix="layer", label="Keyframe livello")
+            st.caption("📍 Keyframe posizione — sposta X/Y sopra, scegli il secondo, poi registra il punto.")
+
+            kf_state_key = f"kf_layer_{li}"
+            if kf_state_key not in st.session_state:
+                st.session_state[kf_state_key] = {'cx': [], 'cy': []}
+            kf_state = st.session_state[kf_state_key]
+
+            col_kt, col_kb = st.columns([3, 1])
+            with col_kt:
+                kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lkft_{li}")
+            with col_kb:
+                st.write("")
+                if st.button("📍 Crea keyframe qui", key=f"lkfadd_{li}"):
+                    t_r = round(float(kf_t_cur), 2)
+                    kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - t_r) > 1e-6] + \
+                                      [{'t': t_r, 'v': l_dict['cx']}]
+                    kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - t_r) > 1e-6] + \
+                                      [{'t': t_r, 'v': l_dict['cy']}]
+                    kf_state['cx'].sort(key=lambda k: k['t'])
+                    kf_state['cy'].sort(key=lambda k: k['t'])
+                    st.session_state[kf_state_key] = kf_state
+
+            _kf_times = sorted(set([k['t'] for k in kf_state['cx']] + [k['t'] for k in kf_state['cy']]))
+            if _kf_times:
+                _to_del_t = None
+                for tt in _kf_times:
+                    xv = next((k['v'] for k in kf_state['cx'] if abs(k['t'] - tt) < 1e-6), None)
+                    yv = next((k['v'] for k in kf_state['cy'] if abs(k['t'] - tt) < 1e-6), None)
+                    r1, r2, r3 = st.columns([2, 3, 1])
+                    with r1: st.caption(f"t = **{tt:.1f}s**")
+                    with r2: st.caption(f"X {xv:.0f}% · Y {yv:.0f}%")
+                    with r3:
+                        if st.button("✕", key=f"lkfdel_{li}_{tt}"):
+                            _to_del_t = tt
+                if _to_del_t is not None:
+                    kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - _to_del_t) > 1e-6]
+                    kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - _to_del_t) > 1e-6]
+                    st.session_state[kf_state_key] = kf_state
+                    st.rerun()
+            else:
+                st.caption("— Nessun keyframe: la posizione resta fissa a X/Y per tutta la durata.")
+
+            l_dict['keyframes'] = kf_state
 
             layers.append(l_dict)
 
