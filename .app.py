@@ -1199,7 +1199,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
 "L'immagine e' stata smontata. Il codice ne ha riscritto la struttura."
 
-> TECHNICAL LOG SHEET:
+TECHNICAL LOG SHEET:
 * File: {base_name}
 * Asset Pool: {len(pool_imgs)} foto
 * Rendering: {total_f} frame @ {fps}fps
@@ -1213,6 +1213,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
 * Sequenza Frame: {'ORDINATA' if seq_mode else 'RANDOM'}{slide_info_it}{stripe_info_it}
 
+Regia e Algoritmo: Loop507
+
 :: EN ::
 [SLICE_PHOTO_DISSECTION] // VOL_01 // H.264 // DATA_FRAGMENT
 :: ENGINE: recursive_cut_pro [v10.0 — keyframe]
@@ -1222,7 +1224,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
 "The image has been disassembled. The code rewrote its structure."
 
-> TECHNICAL LOG SHEET:
+TECHNICAL LOG SHEET:
 * File: {base_name}
 * Asset Pool: {len(pool_imgs)} photos
 * Rendering: {total_f} frames @ {fps}fps
@@ -1236,7 +1238,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 * Power Curve: {'BYPASSED' if rhythm_on else 'ON'}
 * Frame Sequence: {'ORDERED' if seq_mode else 'RANDOM'}{slide_info_en}{stripe_info_en}
 
-> Regia e Algoritmo / Direction & Algorithm: Loop507
+Direction & Algorithm: Loop507
 
 #glitchart #slicephoto #strandshift #digitalanatomy #signalcorruption #brutalistart
 #computationalminimalism #datadestruction #experimentalvideo"""
