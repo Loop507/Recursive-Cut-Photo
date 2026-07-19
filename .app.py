@@ -23,6 +23,8 @@ if 'preset'       not in st.session_state: st.session_state.preset       = None
 if 'frame_export' not in st.session_state: st.session_state.frame_export = None
 if 'stripe_ids'   not in st.session_state: st.session_state.stripe_ids   = [0]
 if 'stripe_next_id' not in st.session_state: st.session_state.stripe_next_id = 1
+if 'layer_ids'     not in st.session_state: st.session_state.layer_ids     = []
+if 'layer_next_id' not in st.session_state: st.session_state.layer_next_id = 0
 
 # --- PRESET GENERE ---
 GENRE_PRESETS = {
@@ -287,6 +289,84 @@ def blend_patch(base, top, mode, opacity):
 
     result = b * (1.0 - opacity) + blended * opacity
     return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def prepare_layer_asset(uploaded_file):
+    """Carica un livello PNG (con alpha) e lo ritorna come RGBA numpy alla risoluzione nativa."""
+    uploaded_file.seek(0)
+    return np.array(Image.open(uploaded_file).convert("RGBA"))
+
+
+def place_layer_on_canvas(layer_rgba, canvas_h, canvas_w, scale, cx_pct, cy_pct):
+    """
+    Ridimensiona il livello (contain-fit dentro il canvas, moltiplicato per 'scale')
+    e lo posiziona al centro (cx_pct, cy_pct)% del canvas. Ritorna (rgb, alpha),
+    array grandi quanto il canvas, con alpha=0 fuori dal livello.
+    """
+    ih, iw = layer_rgba.shape[:2]
+    fit = max(min(canvas_w / iw, canvas_h / ih) * scale, 0.01)
+    new_w, new_h = max(1, int(iw * fit)), max(1, int(ih * fit))
+    resized = cv2.resize(layer_rgba, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    cx = int(cx_pct / 100.0 * canvas_w)
+    cy = int(cy_pct / 100.0 * canvas_h)
+    x0, y0 = cx - new_w // 2, cy - new_h // 2
+
+    rgb_canvas   = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    alpha_canvas = np.zeros((canvas_h, canvas_w, 1), dtype=np.float32)
+
+    src_x0, src_y0 = max(0, -x0), max(0, -y0)
+    dst_x0, dst_y0 = max(0, x0), max(0, y0)
+    dst_x1 = min(canvas_w, x0 + new_w)
+    dst_y1 = min(canvas_h, y0 + new_h)
+    src_x1 = src_x0 + (dst_x1 - dst_x0)
+    src_y1 = src_y0 + (dst_y1 - dst_y0)
+
+    if dst_x1 > dst_x0 and dst_y1 > dst_y0:
+        rgb_canvas[dst_y0:dst_y1, dst_x0:dst_x1] = resized[src_y0:src_y1, src_x0:src_x1, :3]
+        alpha_canvas[dst_y0:dst_y1, dst_x0:dst_x1, 0] = (
+            resized[src_y0:src_y1, src_x0:src_x1, 3].astype(np.float32) / 255.0)
+
+    return rgb_canvas, alpha_canvas
+
+
+def blend_layer(base, top_rgb, alpha, mode):
+    """
+    Compone top_rgb su base secondo il blend mode, con alpha PER-PIXEL (0-1, shape h,w,1)
+    che include sia il canale alpha del PNG sia l'opacita'/pulsazione del livello.
+    """
+    b = base.astype(np.float32)
+    t = top_rgb.astype(np.float32)
+
+    if mode == "Screen":
+        blended = 255.0 - (255.0 - b) * (255.0 - t) / 255.0
+    elif mode == "Multiply":
+        blended = (b * t) / 255.0
+    elif mode == "Difference":
+        blended = np.abs(b - t)
+    else:
+        blended = t
+
+    result = b * (1.0 - alpha) + blended * alpha
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w):
+    """
+    Compone tutti i livelli attivi sopra 'frame', in ordine (1 sotto ... N in cima).
+    Ogni livello "vive" pulsando in continuazione (opacita' e scala) a tempo di BPM:
+    un'onda sinusoidale continua sulla fase del beat, non un keyframe manuale.
+    """
+    if not layers:
+        return frame
+    puls = 0.5 * (1.0 + np.sin(2.0 * np.pi * beat_phase_val))  # 0..1, un ciclo per beat
+    out = frame
+    for lyr in layers:
+        opacity = lyr['base_opacity'] * (1.0 - lyr['pulse_opacity'] + lyr['pulse_opacity'] * puls)
+        scale   = lyr['base_scale']   * (1.0 - lyr['pulse_scale']   + lyr['pulse_scale']   * puls)
+        rgb_c, alpha_c = place_layer_on_canvas(lyr['rgba'], canvas_h, canvas_w, scale, lyr['cx'], lyr['cy'])
+        out = blend_layer(out, rgb_c, alpha_c * opacity, lyr['blend_mode'])
+    return out
 
 
 def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
@@ -715,7 +795,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     stripe_chroma=False, stripe_flash=False,
                     global_chroma=False, global_chroma_amt=6,
                     global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
-                    manual_bpm=None, onset_sensitivity=None):
+                    manual_bpm=None, onset_sensitivity=None,
+                    layers=None):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -735,6 +816,22 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         pool_imgs = [np.zeros((360, 640, 3), dtype=np.uint8)]
 
     h, w = pool_imgs[0].shape[:2]
+
+    # --- LIVELLI (stile Photoshop): PNG con alpha, pulsano a tempo di BPM ---
+    layers_prepared = []
+    if layers:
+        for lyr in layers:
+            if lyr.get('file') is not None:
+                layers_prepared.append({
+                    'rgba':          prepare_layer_asset(lyr['file']),
+                    'blend_mode':    lyr.get('blend_mode', 'Normal'),
+                    'base_opacity':  lyr.get('base_opacity', 0.8),
+                    'pulse_opacity': lyr.get('pulse_opacity', 0.4),
+                    'base_scale':    lyr.get('base_scale', 1.0),
+                    'pulse_scale':   lyr.get('pulse_scale', 0.1),
+                    'cx':            lyr.get('cx', 50.0),
+                    'cy':            lyr.get('cy', 50.0),
+                })
 
     img_m1_half = load_img_half(up_m1) if up_m1 else None
     img_m2_half = load_img_half(up_m2) if up_m2 else None
@@ -867,6 +964,12 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     pv = min(int(100 * (1 - c_n) + 5), 100)
     ev = int(75 * (1 - c_n) + 2)
 
+    # --- finalizzazione frame: livelli PNG sopra il Calderone, poi resize export ---
+    def _finalize(raw_frame, f):
+        if layers_prepared:
+            raw_frame = apply_layers(raw_frame, layers_prepared, float(beat_phase[f]), h, w)
+        return cv2.resize(raw_frame, (out_w, out_h))
+
     # =========================================================
     # MODALITÀ SLIDESHOW
     # =========================================================
@@ -911,7 +1014,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                     t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                 else:
                     out_frame = img_cur
-                return cv2.resize(out_frame, (out_w, out_h))
+                return _finalize(out_frame, f)
             else:
                 trans_prog = (cycle_pos - slide_hold) / max(slide_trans, 0.001)
                 trans_prog = np.clip(trans_prog, 0.0, 1.0)
@@ -947,7 +1050,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     else:
                         out_frame = glitched
 
-                return cv2.resize(out_frame, (out_w, out_h))
+                return _finalize(out_frame, f)
 
         clip = VideoClip(make_frame_slideshow, duration=max_limit)
 
@@ -967,7 +1070,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 if prog <= m1_end:
                     _ramp_m1 = np.clip(prog / m1_end if m1_end > 0.001 else 1.0, 0.0, 1.0)
                     if _ramp_m1 < 0.02:
-                        return cv2.resize(img_m1, (out_w, out_h))
+                        return _finalize(img_m1, f)
                     _m1_prob = 1.0 - _ramp_m1
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
@@ -984,7 +1087,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     _span_m2 = 1.0 - m2_start if m2_start < 0.999 else 1e-6
                     _ramp_m2 = np.clip((prog - m2_start) / _span_m2, 0.0, 1.0)
                     if _ramp_m2 > 0.98:
-                        return cv2.resize(img_m2, (out_w, out_h))
+                        return _finalize(img_m2, f)
                     _m2_prob = _ramp_m2
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
@@ -1072,13 +1175,13 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         _bg = calder_clean
                     else:
                         _bg = stripe_bg_static if stripe_bg_static is not None else pick()
-                    return cv2.resize(
+                    return _finalize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None)),
-                        (out_w, out_h))
-                return cv2.resize(pick(), (out_w, out_h))
+                        f)
+                return _finalize(pick(), f)
 
             # --- Calderone corrente (foto pulita, per la striscia originale) ---
             calder_clean = pick()
@@ -1138,7 +1241,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     alpha = global_flash_intensity / 100.0
                     frame = (calder_clean * (1.0 - alpha) + frame * (1.0 - alpha)).astype(np.uint8)
 
-            result = cv2.resize(frame, (out_w, out_h))
+            result = _finalize(frame, f)
             if f == 0 and 'preview_frame' not in st.session_state:
                 st.session_state.preview_frame = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
             return result
@@ -1789,6 +1892,64 @@ with c2:
     seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
         help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
 
+    st.divider()
+    st.subheader("🖼️ Livelli")
+    st.caption("PNG sovrapposti al Calderone, stile Photoshop. Ogni livello pulsa "
+               "in continuazione (opacità/scala) a tempo del BPM selezionato — nessun keyframe manuale.")
+
+    col_laddd, col_lninfo = st.columns([1, 2])
+    with col_laddd:
+        if st.button("➕ Aggiungi livello", key="add_layer"):
+            st.session_state.layer_ids.append(st.session_state.layer_next_id)
+            st.session_state.layer_next_id += 1
+    with col_lninfo:
+        st.caption(f"{len(st.session_state.layer_ids)} livello/i attivi")
+
+    layers = []
+    _to_delete_layer = None
+
+    for _lidx, li in enumerate(list(st.session_state.layer_ids)):
+        if _to_delete_layer == li:
+            continue
+
+        with st.expander(f"Livello {_lidx+1}", expanded=(_lidx == 0), key=f"exp_layer_{li}"):
+            if st.button(f"🗑️ Elimina livello {_lidx+1}", key=f"del_layer_{li}"):
+                _to_delete_layer = li
+                continue
+
+            l_file = st.file_uploader("PNG (con trasparenza)", type=["png"], key=f"lfile_{li}")
+
+            l_dict = {'file': l_file}
+            col_lb1, col_lb2 = st.columns(2)
+            with col_lb1:
+                l_dict['blend_mode'] = st.selectbox("Blend mode",
+                    ["Normal", "Screen", "Multiply", "Difference"], key=f"lbm_{li}")
+            with col_lb2:
+                l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lsc_{li}",
+                    help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
+
+            col_lp1, col_lp2 = st.columns(2)
+            with col_lp1:
+                l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lop_{li}")
+            with col_lp2:
+                l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lpo_{li}",
+                    help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
+
+            l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lps_{li}",
+                help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
+
+            col_lx, col_ly = st.columns(2)
+            with col_lx:
+                l_dict['cx'] = float(st.slider("Posizione X (%)", 0, 100, 50, key=f"lcx_{li}"))
+            with col_ly:
+                l_dict['cy'] = float(st.slider("Posizione Y (%)", 0, 100, 50, key=f"lcy_{li}"))
+
+            layers.append(l_dict)
+
+    if _to_delete_layer is not None:
+        st.session_state.layer_ids.remove(_to_delete_layer)
+        st.rerun()
+
 with c3:
     st.subheader("🎬 Rendering")
     fmt = st.selectbox("Format", ["16:9 (Orizzontale)", "9:16 (Verticale)", "1:1 (Quadrato)"])
@@ -1895,7 +2056,8 @@ with c3:
             stripe_chroma, stripe_flash,
             global_chroma, global_chroma_amt,
             global_flash, global_flash_threshold, global_flash_intensity,
-            manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity
+            manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity,
+            layers=layers
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
