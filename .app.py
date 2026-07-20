@@ -1553,401 +1553,544 @@ with c2:
             if _src_chk == "🌀 Calderone" or _file_chk is not None:
                 _any_active_layer = True
                 break
-    stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
-        help="Sfondo + finestre che mostrano il Calderone in movimento.")
+    layers = []
 
-    stripes            = []
-    stripe_orientation = "Orizzontale"
-    stripe_bg          = "Master 1"
-    stripe_glitch      = False
-    stripe_reverse     = False
-    stripe_force_beat_react = False
+    tab_strisce, tab_livelli = st.tabs(["🎯 Strisce Selettive", "🖼️ Livelli"])
+    with tab_strisce:
+        stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
+            help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
-    if stripe_mode:
-        stripe_orientation = st.radio("Orientamento strisce",
-            ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True, key="stripe_orientation_g",
-            help="Mix H+V: strisce pari=orizzontali, dispari=verticali")
+        stripes            = []
+        stripe_orientation = "Orizzontale"
+        stripe_bg          = "Master 1"
+        stripe_glitch      = False
+        stripe_reverse     = False
+        stripe_force_beat_react = False
 
-        # scelta sfondo
-        bg_opts = []
-        if up_m1: bg_opts.append("Master 1")
-        if up_m2: bg_opts.append("Master 2")
-        bg_opts.append("Calderone")
-        bg_opts.append("Render")
-        stripe_bg = st.radio("🖼️ Sfondo", bg_opts, horizontal=True, key="stripe_bg_g",
-            help="Master 1/2 = foto ferma. Calderone = foto in movimento. Render = glitch principale come sfondo, strisce sopra.")
+        if stripe_mode:
+            stripe_orientation = st.radio("Orientamento strisce",
+                ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True, key="stripe_orientation_g",
+                help="Mix H+V: strisce pari=orizzontali, dispari=verticali")
 
-        col_tog1, col_tog2 = st.columns(2)
-        with col_tog1:
-            stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False, key="stripe_glitch_g",
-                help="OFF = striscia pulita. ON = glitchata.")
-        with col_tog2:
-            stripe_reverse = st.toggle("🔄 Reverse", value=False, key="stripe_reverse_g",
-                help="Inverte: strisce ferme, tutto il resto Calderone.")
+            # scelta sfondo
+            bg_opts = []
+            if up_m1: bg_opts.append("Master 1")
+            if up_m2: bg_opts.append("Master 2")
+            bg_opts.append("Calderone")
+            bg_opts.append("Render")
+            stripe_bg = st.radio("🖼️ Sfondo", bg_opts, horizontal=True, key="stripe_bg_g",
+                help="Master 1/2 = foto ferma. Calderone = foto in movimento. Render = glitch principale come sfondo, strisce sopra.")
 
-        stripe_force_beat_react = st.toggle("🎵 Tutto a tempo", value=False, key="stripe_force_beat_g",
-            help="Forza 'Sincronizza al beat' su TUTTE le strisce, ignorando il toggle di ognuna. "
-                 "Utile per accendere/spegnere in blocco senza doverle aprire una per una.")
+            col_tog1, col_tog2 = st.columns(2)
+            with col_tog1:
+                stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False, key="stripe_glitch_g",
+                    help="OFF = striscia pulita. ON = glitchata.")
+            with col_tog2:
+                stripe_reverse = st.toggle("🔄 Reverse", value=False, key="stripe_reverse_g",
+                    help="Inverte: strisce ferme, tutto il resto Calderone.")
 
-        st.divider()
+            stripe_force_beat_react = st.toggle("🎵 Tutto a tempo", value=False, key="stripe_force_beat_g",
+                help="Forza 'Sincronizza al beat' su TUTTE le strisce, ignorando il toggle di ognuna. "
+                     "Utile per accendere/spegnere in blocco senza doverle aprire una per una.")
 
-        # --- Pulsanti aggiungi / gestione lista strisce ---
-        col_add, col_ninfo = st.columns([1, 2])
-        with col_add:
-            if st.button("➕ Aggiungi striscia", key="add_stripe"):
-                st.session_state.stripe_ids.append(st.session_state.stripe_next_id)
-                st.session_state.stripe_next_id += 1
-        with col_ninfo:
-            st.caption(f"{len(st.session_state.stripe_ids)} striscia/e attive")
-
-        # --- LOOP STRISCE: ogni striscia in un expander ---
-        _to_delete = None
-
-        for _loop_idx, i in enumerate(list(st.session_state.stripe_ids)):
-            if _to_delete == i:
-                continue
-
-            # Titolo expander dinamico
-            _cur_orient = st.session_state.get(f"so_{i}", "Orizzontale")
-            _kf_count = sum(len(v) for v in st.session_state.get(f"kf_stripe_{i}", {}).values())
-            _kf_tag = f" · {_kf_count} KF" if _kf_count else ""
-            _exp_title = f"Striscia {_loop_idx+1} — {_cur_orient}{_kf_tag}"
-
-            with st.expander(_exp_title, expanded=(_loop_idx == 0), key=f"exp_stripe_{i}"):
-
-                # Pulsante elimina in cima all'expander
-                if st.button(f"🗑️ Elimina striscia {_loop_idx+1}", key=f"del_stripe_{i}"):
-                    _to_delete = i
-                    continue
-
-                # Forma
-                orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
-                if f"so_{i}" not in st.session_state:
-                    # Default assegnato UNA SOLA VOLTA alla creazione della striscia:
-                    # le modifiche successive al toggle globale "Orientamento strisce"
-                    # non devono più toccare strisce già esistenti.
-                    if stripe_orientation == "Mix H+V":
-                        st.session_state[f"so_{i}"] = "Orizzontale" if _loop_idx % 2 == 0 else "Verticale"
-                    elif stripe_orientation in orient_opts:
-                        st.session_state[f"so_{i}"] = stripe_orientation
-                    else:
-                        st.session_state[f"so_{i}"] = "Orizzontale"
-                stripe_orient_i = st.radio(
-                    "Forma", orient_opts,
-                    horizontal=True, key=f"so_{i}")
-
-                s_dict = {
-                    'orientation':   stripe_orient_i,
-                    'chroma_amount': 6,
-                    'flash':         False,
-                    'blend_mode':    'Normal',
-                    'opacity':       1.0,
-                }
-
-                st.divider()
-
-                # Controlli specifici per tipo
-                if stripe_orient_i in ["Orizzontale", "Verticale"]:
-                    ca, cb, cc = st.columns(3)
-                    with ca:
-                        s_dict['center'] = st.slider("Centro (%)", 0, 100, min(20+i*25,95), key=f"sc_{i}")
-                    with cb:
-                        s_dict['size'] = st.slider("Spessore (%)", 1, 100, 10, key=f"ss_{i}")
-                    with cc:
-                        s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 100, 100, key=f"sl_{i}"))
-                    col_m1, col_m2 = st.columns(2)
-                    with col_m1:
-                        s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
-                    with col_m2:
-                        s_dict['move_random'] = st.toggle("Movimento random", value=False, key=f"mr_{i}")
-                    s_dict['move_speed'] = 1.0
-                    if s_dict['move_random']:
-                        s_dict['move_speed'] = st.slider("Velocità movimento", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
-                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"mbr_{i}",
-                        help="Autonomo: senza 'Movimento random', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Movimento random' è attivo, invece è il movimento ad accelerare sul beat.")
-                    s_dict['offset_length'] = float(st.slider("Offset dx/sx (%)", 0, 100, 50, key=f"oc_{i}"))
-
-                elif stripe_orient_i == "Striscia Ruotata":
-                    col_cx, col_cy = st.columns(2)
-                    with col_cx:
-                        s_dict['cx'] = float(st.slider("Centro X (%)", 0, 100, 50, key=f"rcx_{i}"))
-                    with col_cy:
-                        s_dict['cy'] = float(st.slider("Centro Y (%)", 0, 100, 50, key=f"rcy_{i}"))
-                    col_a, col_sp, col_l = st.columns(3)
-                    with col_a:
-                        s_dict['angle'] = float(st.slider("Angolo (°)", 0, 360, 0, key=f"rang_{i}",
-                            help="0=orizzontale, 45=diagonale, 90=verticale"))
-                    with col_sp:
-                        s_dict['size'] = float(st.slider("Spessore (%)", 1, 100, 15, key=f"rsp_{i}"))
-                    with col_l:
-                        s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 150, 100, key=f"rl_{i}",
-                            help=">100 = esce dai bordi"))
-                    col_r1, col_r2 = st.columns(2)
-                    with col_r1:
-                        s_dict['auto_rotate'] = st.toggle("Rotazione automatica", value=False, key=f"rar_{i}")
-                    with col_r2:
-                        s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
-                    s_dict['rotate_speed'] = 30.0
-                    if s_dict['auto_rotate']:
-                        s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
-                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"rbr_{i}",
-                        help="Autonomo: senza 'Rotazione automatica', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
-
-                elif stripe_orient_i == "Lancetta":
-                    col_cx, col_cy = st.columns(2)
-                    with col_cx:
-                        s_dict['cx'] = float(st.slider("Pivot X (%)", 0, 100, 50, key=f"lcx_{i}"))
-                    with col_cy:
-                        s_dict['cy'] = float(st.slider("Pivot Y (%)", 0, 100, 50, key=f"lcy_{i}"))
-                    col_a, col_l, col_t = st.columns(3)
-                    with col_a:
-                        s_dict['angle'] = float(st.slider("Angolo (°)", 0, 360, 90, key=f"lang_{i}",
-                            help="0=destra, 90=su, 180=sinistra, 270=giù"))
-                    with col_l:
-                        s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 100, 50, key=f"ll_{i}"))
-                    with col_t:
-                        s_dict['size'] = st.slider("Spessore (px)", 2, 100, 15, key=f"lt_{i}")
-                    col_r1, col_r2 = st.columns(2)
-                    with col_r1:
-                        s_dict['auto_rotate'] = st.toggle("Rotazione automatica", value=False, key=f"lar_{i}")
-                    with col_r2:
-                        s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
-                    s_dict['rotate_speed'] = 30.0
-                    if s_dict['auto_rotate']:
-                        s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
-                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"lbr_{i}",
-                        help="Autonomo: senza 'Rotazione automatica', la lancetta resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
-
-                elif stripe_orient_i == "Cerchio":
-                    col_cx, col_cy = st.columns(2)
-                    with col_cx:
-                        s_dict['cx'] = float(st.slider("Centro X (%)", 0, 100, 50, key=f"ccx_{i}"))
-                    with col_cy:
-                        s_dict['cy'] = float(st.slider("Centro Y (%)", 0, 100, 50, key=f"ccy_{i}"))
-                    col_r, col_t = st.columns(2)
-                    with col_r:
-                        s_dict['radius'] = float(st.slider("Raggio (%)", 1, 100, 30, key=f"cr_{i}"))
-                    with col_t:
-                        s_dict['size'] = st.slider("Spessore bordo (px)", 1, 50, 8, key=f"ct_{i}",
-                            help="Usato solo se Cerchio pieno è OFF")
-                    col_c1, col_c2, col_c3 = st.columns(3)
-                    with col_c1:
-                        s_dict['filled'] = st.toggle("Cerchio pieno", value=True, key=f"cf_{i}")
-                    with col_c2:
-                        s_dict['length_audio'] = st.toggle("Raggio reattivo", value=False, key=f"la_{i}",
-                            help="Il raggio pulsa col volume")
-                    with col_c3:
-                        s_dict['auto_expand'] = st.toggle("Espansione ciclica", value=False, key=f"ce_{i}",
-                            help="Il cerchio cresce e riparte dal centro")
-                    s_dict['expand_speed'] = 20.0
-                    if s_dict.get('auto_expand'):
-                        s_dict['expand_speed'] = st.slider("Velocità espansione (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
-                    s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"cbr_{i}",
-                        help="Autonomo: senza 'Espansione ciclica', il cerchio resta fermo e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Espansione ciclica' è attiva, invece è l'espansione ad accelerare sul beat.")
-
-                st.divider()
-
-                # Effetti comuni
-                col_e1, col_e2 = st.columns(2)
-                with col_e1:
-                    chroma_on = st.toggle("🌈 Chroma", value=False, key=f"ch_{i}")
-                    s_dict['chroma_on'] = chroma_on
-                with col_e2:
-                    s_dict['flash'] = st.toggle("⚡ Flash beat", value=False, key=f"fl_{i}")
-                if chroma_on:
-                    s_dict['chroma_amount'] = st.slider("Intensità chroma (px)", 1, 30, 6, key=f"ca_{i}")
-                col_b1, col_b2 = st.columns(2)
-                with col_b1:
-                    s_dict['blend_mode'] = st.selectbox("Blend mode",
-                        ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}")
-                with col_b2:
-                    s_dict['opacity'] = st.slider("Opacità (%)", 0, 100, 100, key=f"op_{i}") / 100.0
-
-                st.divider()
-
-                # Keyframe
-                _params_meta = []
-                if stripe_orient_i in ['Orizzontale', 'Verticale']:
-                    _params_meta = [
-                        {'param':'center','label':'Centro (%)','min_v':0,'max_v':100,'default_v':s_dict.get('center',50),'step_v':1},
-                        {'param':'size','label':'Spessore (%)','min_v':1,'max_v':100,'default_v':s_dict.get('size',10),'step_v':1},
-                        {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':100,'default_v':s_dict.get('length',100),'step_v':1},
-                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
-                    ]
-                elif stripe_orient_i == 'Striscia Ruotata':
-                    _params_meta = [
-                        {'param':'angle','label':'Angolo (°)','min_v':0,'max_v':360,'default_v':s_dict.get('angle',0),'step_v':1},
-                        {'param':'size','label':'Spessore (%)','min_v':1,'max_v':100,'default_v':s_dict.get('size',15),'step_v':1},
-                        {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':150,'default_v':s_dict.get('length',100),'step_v':1},
-                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
-                    ]
-                elif stripe_orient_i == 'Lancetta':
-                    _params_meta = [
-                        {'param':'angle','label':'Angolo (°)','min_v':0,'max_v':360,'default_v':s_dict.get('angle',90),'step_v':1},
-                        {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':100,'default_v':s_dict.get('length',50),'step_v':1},
-                        {'param':'size','label':'Spessore (px)','min_v':2,'max_v':100,'default_v':s_dict.get('size',15),'step_v':1},
-                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
-                    ]
-                elif stripe_orient_i == 'Cerchio':
-                    _params_meta = [
-                        {'param':'radius','label':'Raggio (%)','min_v':1,'max_v':100,'default_v':s_dict.get('radius',30),'step_v':1},
-                        {'param':'size','label':'Spessore bordo (px)','min_v':1,'max_v':50,'default_v':s_dict.get('size',8),'step_v':1},
-                        {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
-                    ]
-                if _params_meta:
-                    s_dict['keyframes'] = kf_expander_ui(i, dur, _params_meta)
-
-            stripes.append(s_dict)
-
-        if stripe_force_beat_react:
-            for _s in stripes:
-                _s['beat_react'] = True
-
-        # Applica l'eliminazione dopo aver renderizzato tutto
-        if _to_delete is not None:
-            st.session_state.stripe_ids.remove(_to_delete)
-            st.rerun()
-
-        st.divider()
-
-        # --- ANTEPRIMA (renderizzata a sinistra, sotto "Carica audio") ---
-        prev_choices = []
-        prev_files   = {}
-        if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
-        if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
-        if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
-
-        with stripe_preview_slot:
-         if not _any_active_layer:
-            st.caption("🔍 Anteprima strisce")
-            if prev_choices:
-                prev_sel = st.selectbox("Anteprima su", prev_choices, label_visibility="collapsed")
-                pf = prev_files[prev_sel]
-                pf.seek(0)
-                prev_img_full = np.array(Image.open(pf).convert("RGB"))
-
-                _fmt_dims_sp = {"16:9 (Orizzontale)": (1280, 720),
-                                "9:16 (Verticale)":  (720, 1280),
-                                "1:1 (Quadrato)":    (1080, 1080)}
-                _fw_sp, _fh_sp = _fmt_dims_sp.get(fmt_value, (1280, 720))
-                st.caption(f"Formato: {fmt_value}")
-                prev_img_cropped = cover_crop(prev_img_full, _fw_sp, _fh_sp)  # come farà il render
-
-                ph, pw     = prev_img_cropped.shape[:2]
-                scale      = 220 / max(ph, pw)
-                dw, dh     = int(pw * scale), int(ph * scale)
-                overlay    = cv2.resize(prev_img_cropped, (dw, dh)).copy()
-
-                draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw)
-
-                caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
-                if stripe_reverse:
-                    caption += " · REVERSE ON"
-                st.image(overlay, caption=caption, use_container_width=True)
-            else:
-                st.caption("Carica almeno una foto per vedere l'anteprima.")
             st.divider()
 
-        # --- EFFETTI GLOBALI STRISCIA ---
-        col_fx1, col_fx2 = st.columns(2)
-        with col_fx1:
-            stripe_chroma = st.toggle("🌈 Chroma (globale)", value=False, key="stripe_chroma_g",
-                help="Aberrazione cromatica su tutte le strisce")
-        with col_fx2:
-            stripe_flash = st.toggle("⚡ Flash beat (globale)", value=False, key="stripe_flash_g",
-                help="Tutte le strisce lampeggiano sui beat forti")
+            # --- Pulsanti aggiungi / gestione lista strisce ---
+            col_add, col_ninfo = st.columns([1, 2])
+            with col_add:
+                if st.button("➕ Aggiungi striscia", key="add_stripe"):
+                    st.session_state.stripe_ids.append(st.session_state.stripe_next_id)
+                    st.session_state.stripe_next_id += 1
+            with col_ninfo:
+                st.caption(f"{len(st.session_state.stripe_ids)} striscia/e attive")
 
-        st.divider()
+            # --- LOOP STRISCE: ogni striscia in un expander ---
+            _to_delete = None
 
-        # --- PRESET ---
-        st.caption("💾 Preset strisce")
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            preset_data = {
-                "stripe_orientation": stripe_orientation,
-                "stripe_bg":          stripe_bg,
-                "stripe_glitch":      stripe_glitch,
-                "stripe_reverse":     stripe_reverse,
-                "stripe_chroma":      stripe_chroma,
-                "stripe_flash":       stripe_flash,
-                "stripes":            stripes,
-            }
-            st.download_button(
-                "📤 Esporta preset",
-                data=json.dumps(preset_data, indent=2),
-                file_name="stripe_preset.json",
-                mime="application/json",
-            )
-        with col_p2:
-            uploaded_preset = st.file_uploader("📥 Carica preset", type=["json"], key="preset_upload")
-            if uploaded_preset and st.session_state.get("_last_preset_file") != uploaded_preset.file_id:
-                try:
-                    loaded = json.load(uploaded_preset)
-                    st.session_state.preset = loaded
-                    st.session_state["_last_preset_file"] = uploaded_preset.file_id
+            for _loop_idx, i in enumerate(list(st.session_state.stripe_ids)):
+                if _to_delete == i:
+                    continue
 
-                    # --- Ripristina i toggle/radio globali (via le loro key esplicite) ---
-                    if "stripe_orientation" in loaded:
-                        st.session_state["stripe_orientation_g"] = loaded["stripe_orientation"]
-                    if "stripe_bg" in loaded:
-                        st.session_state["stripe_bg_g"] = loaded["stripe_bg"]
-                    if "stripe_glitch" in loaded:
-                        st.session_state["stripe_glitch_g"] = loaded["stripe_glitch"]
-                    if "stripe_reverse" in loaded:
-                        st.session_state["stripe_reverse_g"] = loaded["stripe_reverse"]
-                    st.session_state["stripe_mode_g"] = True  # riapri il pannello strisce
+                # Titolo expander dinamico
+                _cur_orient = st.session_state.get(f"so_{i}", "Orizzontale")
+                _kf_count = sum(len(v) for v in st.session_state.get(f"kf_stripe_{i}", {}).values())
+                _kf_tag = f" · {_kf_count} KF" if _kf_count else ""
+                _exp_title = f"Striscia {_loop_idx+1} — {_cur_orient}{_kf_tag}"
 
-                    # --- Ripristina gli ID strisce in base al numero salvato nel preset ---
-                    loaded_stripes = loaded.get("stripes", [])
-                    n_loaded = len(loaded_stripes)
-                    if n_loaded > 0:
-                        st.session_state.stripe_ids = list(range(n_loaded))
-                        st.session_state.stripe_next_id = n_loaded
+                with st.expander(_exp_title, expanded=(_loop_idx == 0), key=f"exp_stripe_{i}"):
 
-                    # --- Ripristina ogni striscia nei widget corrispondenti (per key) ---
-                    SHAPE_KEY_MAP = {
-                        "Orizzontale": {"center": "sc", "size": "ss", "length": "sl",
-                                        "length_audio": "la", "move_random": "mr", "move_speed": "ms",
-                                        "beat_react": "mbr", "offset_length": "oc"},
-                        "Verticale": {"center": "sc", "size": "ss", "length": "sl",
-                                      "length_audio": "la", "move_random": "mr", "move_speed": "ms",
-                                      "beat_react": "mbr", "offset_length": "oc"},
-                        "Striscia Ruotata": {"cx": "rcx", "cy": "rcy", "angle": "rang", "size": "rsp",
-                                             "length": "rl", "auto_rotate": "rar", "length_audio": "la",
-                                             "rotate_speed": "rrs", "beat_react": "rbr"},
-                        "Lancetta": {"cx": "lcx", "cy": "lcy", "angle": "lang", "length": "ll",
-                                     "size": "lt", "auto_rotate": "lar", "length_audio": "la",
-                                     "rotate_speed": "lrs", "beat_react": "lbr"},
-                        "Cerchio": {"cx": "ccx", "cy": "ccy", "radius": "cr", "size": "ct",
-                                    "filled": "cf", "length_audio": "la", "auto_expand": "ce",
-                                    "expand_speed": "ces", "beat_react": "cbr"},
+                    # Pulsante elimina in cima all'expander
+                    if st.button(f"🗑️ Elimina striscia {_loop_idx+1}", key=f"del_stripe_{i}"):
+                        _to_delete = i
+                        continue
+
+                    # Forma
+                    orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
+                    if f"so_{i}" not in st.session_state:
+                        # Default assegnato UNA SOLA VOLTA alla creazione della striscia:
+                        # le modifiche successive al toggle globale "Orientamento strisce"
+                        # non devono più toccare strisce già esistenti.
+                        if stripe_orientation == "Mix H+V":
+                            st.session_state[f"so_{i}"] = "Orizzontale" if _loop_idx % 2 == 0 else "Verticale"
+                        elif stripe_orientation in orient_opts:
+                            st.session_state[f"so_{i}"] = stripe_orientation
+                        else:
+                            st.session_state[f"so_{i}"] = "Orizzontale"
+                    stripe_orient_i = st.radio(
+                        "Forma", orient_opts,
+                        horizontal=True, key=f"so_{i}")
+
+                    s_dict = {
+                        'orientation':   stripe_orient_i,
+                        'chroma_amount': 6,
+                        'flash':         False,
+                        'blend_mode':    'Normal',
+                        'opacity':       1.0,
                     }
-                    COMMON_KEY_MAP = {"chroma_on": "ch", "flash": "fl", "chroma_amount": "ca",
-                                       "blend_mode": "bm"}
 
-                    for idx, s in enumerate(loaded_stripes):
-                        orient = s.get("orientation", "Orizzontale")
-                        st.session_state[f"so_{idx}"] = orient
-                        keymap = SHAPE_KEY_MAP.get(orient, SHAPE_KEY_MAP["Orizzontale"])
-                        for field, prefix in keymap.items():
-                            if field in s:
-                                st.session_state[f"{prefix}_{idx}"] = s[field]
-                        for field, prefix in COMMON_KEY_MAP.items():
-                            if field in s:
-                                st.session_state[f"{prefix}_{idx}"] = s[field]
-                        if "opacity" in s:
-                            st.session_state[f"op_{idx}"] = int(round(s["opacity"] * 100))
-                        if "keyframes" in s:
-                            st.session_state[f"kf_stripe_{idx}"] = s["keyframes"]
+                    st.divider()
 
-                    st.success("Preset caricato!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Errore preset: {e}")
+                    # Controlli specifici per tipo
+                    if stripe_orient_i in ["Orizzontale", "Verticale"]:
+                        ca, cb, cc = st.columns(3)
+                        with ca:
+                            s_dict['center'] = st.slider("Centro (%)", 0, 100, min(20+i*25,95), key=f"sc_{i}")
+                        with cb:
+                            s_dict['size'] = st.slider("Spessore (%)", 1, 100, 10, key=f"ss_{i}")
+                        with cc:
+                            s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 100, 100, key=f"sl_{i}"))
+                        col_m1, col_m2 = st.columns(2)
+                        with col_m1:
+                            s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
+                        with col_m2:
+                            s_dict['move_random'] = st.toggle("Movimento random", value=False, key=f"mr_{i}")
+                        s_dict['move_speed'] = 1.0
+                        if s_dict['move_random']:
+                            s_dict['move_speed'] = st.slider("Velocità movimento", 0.1, 5.0, 1.0, step=0.1, key=f"ms_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"mbr_{i}",
+                            help="Autonomo: senza 'Movimento random', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Movimento random' è attivo, invece è il movimento ad accelerare sul beat.")
+                        s_dict['offset_length'] = float(st.slider("Offset dx/sx (%)", 0, 100, 50, key=f"oc_{i}"))
 
-    else:
-        stripe_chroma = False
-        stripe_flash  = False
+                    elif stripe_orient_i == "Striscia Ruotata":
+                        col_cx, col_cy = st.columns(2)
+                        with col_cx:
+                            s_dict['cx'] = float(st.slider("Centro X (%)", 0, 100, 50, key=f"rcx_{i}"))
+                        with col_cy:
+                            s_dict['cy'] = float(st.slider("Centro Y (%)", 0, 100, 50, key=f"rcy_{i}"))
+                        col_a, col_sp, col_l = st.columns(3)
+                        with col_a:
+                            s_dict['angle'] = float(st.slider("Angolo (°)", 0, 360, 0, key=f"rang_{i}",
+                                help="0=orizzontale, 45=diagonale, 90=verticale"))
+                        with col_sp:
+                            s_dict['size'] = float(st.slider("Spessore (%)", 1, 100, 15, key=f"rsp_{i}"))
+                        with col_l:
+                            s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 150, 100, key=f"rl_{i}",
+                                help=">100 = esce dai bordi"))
+                        col_r1, col_r2 = st.columns(2)
+                        with col_r1:
+                            s_dict['auto_rotate'] = st.toggle("Rotazione automatica", value=False, key=f"rar_{i}")
+                        with col_r2:
+                            s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
+                        s_dict['rotate_speed'] = 30.0
+                        if s_dict['auto_rotate']:
+                            s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"rrs_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"rbr_{i}",
+                            help="Autonomo: senza 'Rotazione automatica', la striscia resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
+
+                    elif stripe_orient_i == "Lancetta":
+                        col_cx, col_cy = st.columns(2)
+                        with col_cx:
+                            s_dict['cx'] = float(st.slider("Pivot X (%)", 0, 100, 50, key=f"lcx_{i}"))
+                        with col_cy:
+                            s_dict['cy'] = float(st.slider("Pivot Y (%)", 0, 100, 50, key=f"lcy_{i}"))
+                        col_a, col_l, col_t = st.columns(3)
+                        with col_a:
+                            s_dict['angle'] = float(st.slider("Angolo (°)", 0, 360, 90, key=f"lang_{i}",
+                                help="0=destra, 90=su, 180=sinistra, 270=giù"))
+                        with col_l:
+                            s_dict['length'] = float(st.slider("Lunghezza (%)", 5, 100, 50, key=f"ll_{i}"))
+                        with col_t:
+                            s_dict['size'] = st.slider("Spessore (px)", 2, 100, 15, key=f"lt_{i}")
+                        col_r1, col_r2 = st.columns(2)
+                        with col_r1:
+                            s_dict['auto_rotate'] = st.toggle("Rotazione automatica", value=False, key=f"lar_{i}")
+                        with col_r2:
+                            s_dict['length_audio'] = st.toggle("Lunghezza reattiva", value=False, key=f"la_{i}")
+                        s_dict['rotate_speed'] = 30.0
+                        if s_dict['auto_rotate']:
+                            s_dict['rotate_speed'] = st.slider("Velocità rotazione (°/sec)", 5.0, 360.0, 30.0, key=f"lrs_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"lbr_{i}",
+                            help="Autonomo: senza 'Rotazione automatica', la lancetta resta ferma e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Rotazione automatica' è attiva, invece è la rotazione ad accelerare sul beat.")
+
+                    elif stripe_orient_i == "Cerchio":
+                        col_cx, col_cy = st.columns(2)
+                        with col_cx:
+                            s_dict['cx'] = float(st.slider("Centro X (%)", 0, 100, 50, key=f"ccx_{i}"))
+                        with col_cy:
+                            s_dict['cy'] = float(st.slider("Centro Y (%)", 0, 100, 50, key=f"ccy_{i}"))
+                        col_r, col_t = st.columns(2)
+                        with col_r:
+                            s_dict['radius'] = float(st.slider("Raggio (%)", 1, 100, 30, key=f"cr_{i}"))
+                        with col_t:
+                            s_dict['size'] = st.slider("Spessore bordo (px)", 1, 50, 8, key=f"ct_{i}",
+                                help="Usato solo se Cerchio pieno è OFF")
+                        col_c1, col_c2, col_c3 = st.columns(3)
+                        with col_c1:
+                            s_dict['filled'] = st.toggle("Cerchio pieno", value=True, key=f"cf_{i}")
+                        with col_c2:
+                            s_dict['length_audio'] = st.toggle("Raggio reattivo", value=False, key=f"la_{i}",
+                                help="Il raggio pulsa col volume")
+                        with col_c3:
+                            s_dict['auto_expand'] = st.toggle("Espansione ciclica", value=False, key=f"ce_{i}",
+                                help="Il cerchio cresce e riparte dal centro")
+                        s_dict['expand_speed'] = 20.0
+                        if s_dict.get('auto_expand'):
+                            s_dict['expand_speed'] = st.slider("Velocità espansione (%/sec)", 5.0, 100.0, 20.0, key=f"ces_{i}")
+                        s_dict['beat_react'] = st.toggle("🎵 Sincronizza al beat", value=False, key=f"cbr_{i}",
+                            help="Autonomo: senza 'Espansione ciclica', il cerchio resta fermo e lampeggia a tempo (piena visibilità sul colpo, invisibile altrimenti — segue solo il BPM, indipendentemente dal genere scelto). Se 'Espansione ciclica' è attiva, invece è l'espansione ad accelerare sul beat.")
+
+                    st.divider()
+
+                    # Effetti comuni
+                    col_e1, col_e2 = st.columns(2)
+                    with col_e1:
+                        chroma_on = st.toggle("🌈 Chroma", value=False, key=f"ch_{i}")
+                        s_dict['chroma_on'] = chroma_on
+                    with col_e2:
+                        s_dict['flash'] = st.toggle("⚡ Flash beat", value=False, key=f"fl_{i}")
+                    if chroma_on:
+                        s_dict['chroma_amount'] = st.slider("Intensità chroma (px)", 1, 30, 6, key=f"ca_{i}")
+                    col_b1, col_b2 = st.columns(2)
+                    with col_b1:
+                        s_dict['blend_mode'] = st.selectbox("Blend mode",
+                            ["Normal", "Screen", "Multiply", "Difference"], key=f"bm_{i}")
+                    with col_b2:
+                        s_dict['opacity'] = st.slider("Opacità (%)", 0, 100, 100, key=f"op_{i}") / 100.0
+
+                    st.divider()
+
+                    # Keyframe
+                    _params_meta = []
+                    if stripe_orient_i in ['Orizzontale', 'Verticale']:
+                        _params_meta = [
+                            {'param':'center','label':'Centro (%)','min_v':0,'max_v':100,'default_v':s_dict.get('center',50),'step_v':1},
+                            {'param':'size','label':'Spessore (%)','min_v':1,'max_v':100,'default_v':s_dict.get('size',10),'step_v':1},
+                            {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':100,'default_v':s_dict.get('length',100),'step_v':1},
+                            {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                        ]
+                    elif stripe_orient_i == 'Striscia Ruotata':
+                        _params_meta = [
+                            {'param':'angle','label':'Angolo (°)','min_v':0,'max_v':360,'default_v':s_dict.get('angle',0),'step_v':1},
+                            {'param':'size','label':'Spessore (%)','min_v':1,'max_v':100,'default_v':s_dict.get('size',15),'step_v':1},
+                            {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':150,'default_v':s_dict.get('length',100),'step_v':1},
+                            {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                        ]
+                    elif stripe_orient_i == 'Lancetta':
+                        _params_meta = [
+                            {'param':'angle','label':'Angolo (°)','min_v':0,'max_v':360,'default_v':s_dict.get('angle',90),'step_v':1},
+                            {'param':'length','label':'Lunghezza (%)','min_v':5,'max_v':100,'default_v':s_dict.get('length',50),'step_v':1},
+                            {'param':'size','label':'Spessore (px)','min_v':2,'max_v':100,'default_v':s_dict.get('size',15),'step_v':1},
+                            {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                        ]
+                    elif stripe_orient_i == 'Cerchio':
+                        _params_meta = [
+                            {'param':'radius','label':'Raggio (%)','min_v':1,'max_v':100,'default_v':s_dict.get('radius',30),'step_v':1},
+                            {'param':'size','label':'Spessore bordo (px)','min_v':1,'max_v':50,'default_v':s_dict.get('size',8),'step_v':1},
+                            {'param':'opacity','label':'Opacità','min_v':0.0,'max_v':1.0,'default_v':s_dict.get('opacity',1.0),'step_v':0.01},
+                        ]
+                    if _params_meta:
+                        s_dict['keyframes'] = kf_expander_ui(i, dur, _params_meta)
+
+                stripes.append(s_dict)
+
+            if stripe_force_beat_react:
+                for _s in stripes:
+                    _s['beat_react'] = True
+
+            # Applica l'eliminazione dopo aver renderizzato tutto
+            if _to_delete is not None:
+                st.session_state.stripe_ids.remove(_to_delete)
+                st.rerun()
+
+            st.divider()
+
+            # --- ANTEPRIMA (renderizzata a sinistra, sotto "Carica audio") ---
+            prev_choices = []
+            prev_files   = {}
+            if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
+            if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
+            if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
+
+            with stripe_preview_slot:
+             if not _any_active_layer:
+                st.caption("🔍 Anteprima strisce")
+                if prev_choices:
+                    prev_sel = st.selectbox("Anteprima su", prev_choices, label_visibility="collapsed")
+                    pf = prev_files[prev_sel]
+                    pf.seek(0)
+                    prev_img_full = np.array(Image.open(pf).convert("RGB"))
+
+                    _fmt_dims_sp = {"16:9 (Orizzontale)": (1280, 720),
+                                    "9:16 (Verticale)":  (720, 1280),
+                                    "1:1 (Quadrato)":    (1080, 1080)}
+                    _fw_sp, _fh_sp = _fmt_dims_sp.get(fmt_value, (1280, 720))
+                    st.caption(f"Formato: {fmt_value}")
+                    prev_img_cropped = cover_crop(prev_img_full, _fw_sp, _fh_sp)  # come farà il render
+
+                    ph, pw     = prev_img_cropped.shape[:2]
+                    scale      = 220 / max(ph, pw)
+                    dw, dh     = int(pw * scale), int(ph * scale)
+                    overlay    = cv2.resize(prev_img_cropped, (dw, dh)).copy()
+
+                    draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw)
+
+                    caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
+                    if stripe_reverse:
+                        caption += " · REVERSE ON"
+                    st.image(overlay, caption=caption, use_container_width=True)
+                else:
+                    st.caption("Carica almeno una foto per vedere l'anteprima.")
+                st.divider()
+
+            # --- EFFETTI GLOBALI STRISCIA ---
+            col_fx1, col_fx2 = st.columns(2)
+            with col_fx1:
+                stripe_chroma = st.toggle("🌈 Chroma (globale)", value=False, key="stripe_chroma_g",
+                    help="Aberrazione cromatica su tutte le strisce")
+            with col_fx2:
+                stripe_flash = st.toggle("⚡ Flash beat (globale)", value=False, key="stripe_flash_g",
+                    help="Tutte le strisce lampeggiano sui beat forti")
+
+            st.divider()
+
+            # --- PRESET ---
+            st.caption("💾 Preset strisce")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                preset_data = {
+                    "stripe_orientation": stripe_orientation,
+                    "stripe_bg":          stripe_bg,
+                    "stripe_glitch":      stripe_glitch,
+                    "stripe_reverse":     stripe_reverse,
+                    "stripe_chroma":      stripe_chroma,
+                    "stripe_flash":       stripe_flash,
+                    "stripes":            stripes,
+                }
+                st.download_button(
+                    "📤 Esporta preset",
+                    data=json.dumps(preset_data, indent=2),
+                    file_name="stripe_preset.json",
+                    mime="application/json",
+                )
+            with col_p2:
+                uploaded_preset = st.file_uploader("📥 Carica preset", type=["json"], key="preset_upload")
+                if uploaded_preset and st.session_state.get("_last_preset_file") != uploaded_preset.file_id:
+                    try:
+                        loaded = json.load(uploaded_preset)
+                        st.session_state.preset = loaded
+                        st.session_state["_last_preset_file"] = uploaded_preset.file_id
+
+                        # --- Ripristina i toggle/radio globali (via le loro key esplicite) ---
+                        if "stripe_orientation" in loaded:
+                            st.session_state["stripe_orientation_g"] = loaded["stripe_orientation"]
+                        if "stripe_bg" in loaded:
+                            st.session_state["stripe_bg_g"] = loaded["stripe_bg"]
+                        if "stripe_glitch" in loaded:
+                            st.session_state["stripe_glitch_g"] = loaded["stripe_glitch"]
+                        if "stripe_reverse" in loaded:
+                            st.session_state["stripe_reverse_g"] = loaded["stripe_reverse"]
+                        st.session_state["stripe_mode_g"] = True  # riapri il pannello strisce
+
+                        # --- Ripristina gli ID strisce in base al numero salvato nel preset ---
+                        loaded_stripes = loaded.get("stripes", [])
+                        n_loaded = len(loaded_stripes)
+                        if n_loaded > 0:
+                            st.session_state.stripe_ids = list(range(n_loaded))
+                            st.session_state.stripe_next_id = n_loaded
+
+                        # --- Ripristina ogni striscia nei widget corrispondenti (per key) ---
+                        SHAPE_KEY_MAP = {
+                            "Orizzontale": {"center": "sc", "size": "ss", "length": "sl",
+                                            "length_audio": "la", "move_random": "mr", "move_speed": "ms",
+                                            "beat_react": "mbr", "offset_length": "oc"},
+                            "Verticale": {"center": "sc", "size": "ss", "length": "sl",
+                                          "length_audio": "la", "move_random": "mr", "move_speed": "ms",
+                                          "beat_react": "mbr", "offset_length": "oc"},
+                            "Striscia Ruotata": {"cx": "rcx", "cy": "rcy", "angle": "rang", "size": "rsp",
+                                                 "length": "rl", "auto_rotate": "rar", "length_audio": "la",
+                                                 "rotate_speed": "rrs", "beat_react": "rbr"},
+                            "Lancetta": {"cx": "lcx", "cy": "lcy", "angle": "lang", "length": "ll",
+                                         "size": "lt", "auto_rotate": "lar", "length_audio": "la",
+                                         "rotate_speed": "lrs", "beat_react": "lbr"},
+                            "Cerchio": {"cx": "ccx", "cy": "ccy", "radius": "cr", "size": "ct",
+                                        "filled": "cf", "length_audio": "la", "auto_expand": "ce",
+                                        "expand_speed": "ces", "beat_react": "cbr"},
+                        }
+                        COMMON_KEY_MAP = {"chroma_on": "ch", "flash": "fl", "chroma_amount": "ca",
+                                           "blend_mode": "bm"}
+
+                        for idx, s in enumerate(loaded_stripes):
+                            orient = s.get("orientation", "Orizzontale")
+                            st.session_state[f"so_{idx}"] = orient
+                            keymap = SHAPE_KEY_MAP.get(orient, SHAPE_KEY_MAP["Orizzontale"])
+                            for field, prefix in keymap.items():
+                                if field in s:
+                                    st.session_state[f"{prefix}_{idx}"] = s[field]
+                            for field, prefix in COMMON_KEY_MAP.items():
+                                if field in s:
+                                    st.session_state[f"{prefix}_{idx}"] = s[field]
+                            if "opacity" in s:
+                                st.session_state[f"op_{idx}"] = int(round(s["opacity"] * 100))
+                            if "keyframes" in s:
+                                st.session_state[f"kf_stripe_{idx}"] = s["keyframes"]
+
+                        st.success("Preset caricato!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Errore preset: {e}")
+
+        else:
+            stripe_chroma = False
+            stripe_flash  = False
+
+    with tab_livelli:
+        layers_panel_on = st.toggle("🖼️ Livelli (PNG o Calderone impilati, stile Photoshop)", value=False,
+            key="layers_panel_on",
+            help="Foto (PNG) o il Calderone stesso, impilati stile Photoshop. Opacità e scala pulsano "
+                 "in continuazione a tempo del BPM (attivabile/disattivabile per livello). "
+                 "La posizione X/Y può anche essere animata con keyframe.")
+
+
+        if layers_panel_on:
+            col_laddd, col_lninfo = st.columns([1, 2])
+            with col_laddd:
+                if st.button("➕ Aggiungi livello", key="add_layer"):
+                    st.session_state.layer_ids.append(st.session_state.layer_next_id)
+                    st.session_state.layer_next_id += 1
+            with col_lninfo:
+                st.caption(f"{len(st.session_state.layer_ids)} livello/i attivi")
+
+            _to_delete_layer = None
+
+            for _lidx, li in enumerate(list(st.session_state.layer_ids)):
+                if _to_delete_layer == li:
+                    continue
+
+                with st.expander(f"Livello {_lidx+1}", expanded=(_lidx == 0), key=f"exp_layer_{li}"):
+                    if st.button(f"🗑️ Elimina livello {_lidx+1}", key=f"del_layer_{li}"):
+                        _to_delete_layer = li
+                        continue
+
+                    l_source = st.radio("Sorgente livello", ["📁 Foto (PNG)", "🌀 Calderone"],
+                        horizontal=True, key=f"lyr_src_{li}",
+                        help="Calderone: usa l'output del Calderone (con le sue impostazioni normali) "
+                             "come contenuto di questo livello — così puoi impilarlo, dargli un blend "
+                             "mode/opacità/posizione propri, insieme ad altre foto sopra o sotto.")
+
+                    if l_source == "📁 Foto (PNG)":
+                        l_file = st.file_uploader("Immagine (PNG con trasparenza, o JPG/JPEG)",
+                            type=["png", "jpg", "jpeg"], key=f"lyr_file_{li}",
+                            help="PNG con alpha: le zone trasparenti restano trasparenti. "
+                                 "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
+                                 "(l'opacità/pulsazione del livello funziona comunque).")
+                        l_fit = st.radio("Adattamento al formato", 
+                            ["🔲 Riempi (ritaglia, come il Calderone)", "🖼️ Contieni (mostra tutta l'immagine)"],
+                            horizontal=True, key=f"lyr_fit_{li}",
+                            help="Riempi: ritaglia i bordi in eccesso per coprire tutto il fotogramma, "
+                                 "senza barre vuote — stesso comportamento del Calderone. "
+                                 "Contieni: mostra l'immagine intera, può lasciare bordi trasparenti "
+                                 "se le proporzioni non coincidono con il formato video (utile per loghi/PNG con trasparenza).")
+                        l_dict = {'file': l_file, 'type': 'png',
+                                  'fit_mode': 'cover' if l_fit.startswith("🔲") else 'contain'}
+                    else:
+                        l_dict = {'file': None, 'type': 'calderone'}
+                        st.caption("Il Calderone gira sempre con le sue impostazioni normali — qui scegli "
+                                   "solo come inserirlo nella pila dei livelli.")
+
+                    col_lb1, col_lb2 = st.columns(2)
+                    with col_lb1:
+                        l_dict['blend_mode'] = st.selectbox("Blend mode",
+                            ["Normal", "Screen", "Multiply", "Difference"], key=f"lyr_bm_{li}")
+                    with col_lb2:
+                        l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lyr_sc_{li}",
+                            help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
+
+                    l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lyr_op_{li}")
+
+                    l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lyr_br_{li}",
+                        help="ON: il livello pulsa (opacità/scala) a tempo del BPM. OFF: resta fisso ai valori base.")
+
+                    if l_dict['beat_react']:
+                        col_lp1, col_lp2 = st.columns(2)
+                        with col_lp1:
+                            l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lyr_po_{li}",
+                                help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
+                        with col_lp2:
+                            l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lyr_ps_{li}",
+                                help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
+                    else:
+                        l_dict['pulse_opacity'] = 0.0
+                        l_dict['pulse_scale']   = 0.0
+
+                    col_lx, col_ly = st.columns(2)
+                    with col_lx:
+                        l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lyr_cx_{li}",
+                            help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
+                    with col_ly:
+                        l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lyr_cy_{li}",
+                            help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
+
+                    st.divider()
+                    st.caption("📍 Keyframe posizione — sposta X/Y sopra, scegli il secondo, poi registra il punto.")
+
+                    kf_state_key = f"kf_layer_{li}"
+                    if kf_state_key not in st.session_state:
+                        st.session_state[kf_state_key] = {'cx': [], 'cy': []}
+                    kf_state = st.session_state[kf_state_key]
+
+                    col_kt, col_kb = st.columns([3, 1])
+                    with col_kt:
+                        kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lyr_kft_{li}")
+                    with col_kb:
+                        st.write("")
+                        if st.button("📍 Crea keyframe qui", key=f"lyr_kfadd_{li}"):
+                            t_r = round(float(kf_t_cur), 2)
+                            kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - t_r) > 1e-6] + \
+                                              [{'t': t_r, 'v': l_dict['cx']}]
+                            kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - t_r) > 1e-6] + \
+                                              [{'t': t_r, 'v': l_dict['cy']}]
+                            kf_state['cx'].sort(key=lambda k: k['t'])
+                            kf_state['cy'].sort(key=lambda k: k['t'])
+                            st.session_state[kf_state_key] = kf_state
+
+                    _kf_times = sorted(set([k['t'] for k in kf_state['cx']] + [k['t'] for k in kf_state['cy']]))
+                    if _kf_times:
+                        _to_del_t = None
+                        for tt in _kf_times:
+                            xv = next((k['v'] for k in kf_state['cx'] if abs(k['t'] - tt) < 1e-6), None)
+                            yv = next((k['v'] for k in kf_state['cy'] if abs(k['t'] - tt) < 1e-6), None)
+                            r1, r2, r3 = st.columns([2, 3, 1])
+                            with r1: st.caption(f"t = **{tt:.1f}s**")
+                            with r2: st.caption(f"X {xv:.0f}% · Y {yv:.0f}%")
+                            with r3:
+                                if st.button("✕", key=f"lyr_kfdel_{li}_{tt}"):
+                                    _to_del_t = tt
+                        if _to_del_t is not None:
+                            kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - _to_del_t) > 1e-6]
+                            kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - _to_del_t) > 1e-6]
+                            st.session_state[kf_state_key] = kf_state
+                            st.rerun()
+                    else:
+                        st.caption("— Nessun keyframe: la posizione resta fissa a X/Y per tutta la durata.")
+
+                    l_dict['keyframes'] = kf_state
+
+                    layers.append(l_dict)
+
+            if _to_delete_layer is not None:
+                st.session_state.layer_ids.remove(_to_delete_layer)
+                st.rerun()
+
 
     st.divider()
 
@@ -1979,146 +2122,6 @@ with c2:
     st.divider()
     seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
         help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
-
-    st.divider()
-    layers_panel_on = st.toggle("🖼️ Livelli (PNG o Calderone impilati, stile Photoshop)", value=False,
-        key="layers_panel_on",
-        help="Foto (PNG) o il Calderone stesso, impilati stile Photoshop. Opacità e scala pulsano "
-             "in continuazione a tempo del BPM (attivabile/disattivabile per livello). "
-             "La posizione X/Y può anche essere animata con keyframe.")
-
-    layers = []
-
-    if layers_panel_on:
-        col_laddd, col_lninfo = st.columns([1, 2])
-        with col_laddd:
-            if st.button("➕ Aggiungi livello", key="add_layer"):
-                st.session_state.layer_ids.append(st.session_state.layer_next_id)
-                st.session_state.layer_next_id += 1
-        with col_lninfo:
-            st.caption(f"{len(st.session_state.layer_ids)} livello/i attivi")
-
-        _to_delete_layer = None
-
-        for _lidx, li in enumerate(list(st.session_state.layer_ids)):
-            if _to_delete_layer == li:
-                continue
-
-            with st.expander(f"Livello {_lidx+1}", expanded=(_lidx == 0), key=f"exp_layer_{li}"):
-                if st.button(f"🗑️ Elimina livello {_lidx+1}", key=f"del_layer_{li}"):
-                    _to_delete_layer = li
-                    continue
-
-                l_source = st.radio("Sorgente livello", ["📁 Foto (PNG)", "🌀 Calderone"],
-                    horizontal=True, key=f"lyr_src_{li}",
-                    help="Calderone: usa l'output del Calderone (con le sue impostazioni normali) "
-                         "come contenuto di questo livello — così puoi impilarlo, dargli un blend "
-                         "mode/opacità/posizione propri, insieme ad altre foto sopra o sotto.")
-
-                if l_source == "📁 Foto (PNG)":
-                    l_file = st.file_uploader("Immagine (PNG con trasparenza, o JPG/JPEG)",
-                        type=["png", "jpg", "jpeg"], key=f"lyr_file_{li}",
-                        help="PNG con alpha: le zone trasparenti restano trasparenti. "
-                             "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
-                             "(l'opacità/pulsazione del livello funziona comunque).")
-                    l_fit = st.radio("Adattamento al formato", 
-                        ["🔲 Riempi (ritaglia, come il Calderone)", "🖼️ Contieni (mostra tutta l'immagine)"],
-                        horizontal=True, key=f"lyr_fit_{li}",
-                        help="Riempi: ritaglia i bordi in eccesso per coprire tutto il fotogramma, "
-                             "senza barre vuote — stesso comportamento del Calderone. "
-                             "Contieni: mostra l'immagine intera, può lasciare bordi trasparenti "
-                             "se le proporzioni non coincidono con il formato video (utile per loghi/PNG con trasparenza).")
-                    l_dict = {'file': l_file, 'type': 'png',
-                              'fit_mode': 'cover' if l_fit.startswith("🔲") else 'contain'}
-                else:
-                    l_dict = {'file': None, 'type': 'calderone'}
-                    st.caption("Il Calderone gira sempre con le sue impostazioni normali — qui scegli "
-                               "solo come inserirlo nella pila dei livelli.")
-
-                col_lb1, col_lb2 = st.columns(2)
-                with col_lb1:
-                    l_dict['blend_mode'] = st.selectbox("Blend mode",
-                        ["Normal", "Screen", "Multiply", "Difference"], key=f"lyr_bm_{li}")
-                with col_lb2:
-                    l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lyr_sc_{li}",
-                        help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
-
-                l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lyr_op_{li}")
-
-                l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lyr_br_{li}",
-                    help="ON: il livello pulsa (opacità/scala) a tempo del BPM. OFF: resta fisso ai valori base.")
-
-                if l_dict['beat_react']:
-                    col_lp1, col_lp2 = st.columns(2)
-                    with col_lp1:
-                        l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lyr_po_{li}",
-                            help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
-                    with col_lp2:
-                        l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lyr_ps_{li}",
-                            help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
-                else:
-                    l_dict['pulse_opacity'] = 0.0
-                    l_dict['pulse_scale']   = 0.0
-
-                col_lx, col_ly = st.columns(2)
-                with col_lx:
-                    l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lyr_cx_{li}",
-                        help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
-                with col_ly:
-                    l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lyr_cy_{li}",
-                        help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
-
-                st.divider()
-                st.caption("📍 Keyframe posizione — sposta X/Y sopra, scegli il secondo, poi registra il punto.")
-
-                kf_state_key = f"kf_layer_{li}"
-                if kf_state_key not in st.session_state:
-                    st.session_state[kf_state_key] = {'cx': [], 'cy': []}
-                kf_state = st.session_state[kf_state_key]
-
-                col_kt, col_kb = st.columns([3, 1])
-                with col_kt:
-                    kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lyr_kft_{li}")
-                with col_kb:
-                    st.write("")
-                    if st.button("📍 Crea keyframe qui", key=f"lyr_kfadd_{li}"):
-                        t_r = round(float(kf_t_cur), 2)
-                        kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - t_r) > 1e-6] + \
-                                          [{'t': t_r, 'v': l_dict['cx']}]
-                        kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - t_r) > 1e-6] + \
-                                          [{'t': t_r, 'v': l_dict['cy']}]
-                        kf_state['cx'].sort(key=lambda k: k['t'])
-                        kf_state['cy'].sort(key=lambda k: k['t'])
-                        st.session_state[kf_state_key] = kf_state
-
-                _kf_times = sorted(set([k['t'] for k in kf_state['cx']] + [k['t'] for k in kf_state['cy']]))
-                if _kf_times:
-                    _to_del_t = None
-                    for tt in _kf_times:
-                        xv = next((k['v'] for k in kf_state['cx'] if abs(k['t'] - tt) < 1e-6), None)
-                        yv = next((k['v'] for k in kf_state['cy'] if abs(k['t'] - tt) < 1e-6), None)
-                        r1, r2, r3 = st.columns([2, 3, 1])
-                        with r1: st.caption(f"t = **{tt:.1f}s**")
-                        with r2: st.caption(f"X {xv:.0f}% · Y {yv:.0f}%")
-                        with r3:
-                            if st.button("✕", key=f"lyr_kfdel_{li}_{tt}"):
-                                _to_del_t = tt
-                    if _to_del_t is not None:
-                        kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - _to_del_t) > 1e-6]
-                        kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - _to_del_t) > 1e-6]
-                        st.session_state[kf_state_key] = kf_state
-                        st.rerun()
-                else:
-                    st.caption("— Nessun keyframe: la posizione resta fissa a X/Y per tutta la durata.")
-
-                l_dict['keyframes'] = kf_state
-
-                layers.append(l_dict)
-
-        if _to_delete_layer is not None:
-            st.session_state.layer_ids.remove(_to_delete_layer)
-            st.rerun()
-
     with layer_preview_slot:
         active_layers   = [l for l in layers if l.get('type') == 'png' and l.get('file') is not None]
         calderone_layers = [l for l in layers if l.get('type') == 'calderone']
