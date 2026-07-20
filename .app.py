@@ -394,7 +394,15 @@ def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total
         scale   = lyr['base_scale']   * (1.0 - lyr['pulse_scale']   + lyr['pulse_scale']   * puls)
         cx = kf_get(lyr, 'cx', t, total_dur, lyr['cx'])
         cy = kf_get(lyr, 'cy', t, total_dur, lyr['cy'])
-        if lyr.get('type') == 'calderone':
+
+        is_calderone = (lyr.get('type') == 'calderone')
+        # scorciatoia veloce: Calderone senza riposizionamento/scala (il caso più comune) —
+        # blend diretto sull'intero frame, senza passare per dstack/resize/canvas vuoto.
+        if is_calderone and abs(scale - 1.0) < 1e-6 and abs(cx - 50.0) < 1e-6 and abs(cy - 50.0) < 1e-6:
+            out = blend_patch(out, calderone_rgb, lyr['blend_mode'], opacity)
+            continue
+
+        if is_calderone:
             alpha_full = np.full(calderone_rgb.shape[:2] + (1,), 255, dtype=np.uint8)
             src_rgba = np.dstack([calderone_rgb, alpha_full])
         elif lyr.get('fit_mode') == 'cover':
@@ -404,6 +412,85 @@ def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total
         rgb_c, alpha_c = place_layer_on_canvas(src_rgba, canvas_h, canvas_w, scale, cx, cy)
         out = blend_layer(out, rgb_c, alpha_c * opacity, lyr['blend_mode'])
     return out
+
+
+def draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw):
+    """
+    Disegna sopra 'overlay' (immagine RGB dh x dw) un riquadro viola per ogni striscia
+    configurata, nella posizione/dimensione impostata — usato sia dall'anteprima
+    strisce "normale" sia da quella unificata coi Livelli. Muta 'overlay' in place.
+    """
+    def _draw_stripe_h(ov, p0, p1, l0, l1):
+        p0, p1 = max(0, p0), min(dh, p1)
+        l0, l1 = max(0, l0), min(dw, l1)
+        if p1 > p0 and l1 > l0:
+            ov[p0:p1, l0:l1] = (ov[p0:p1, l0:l1] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
+        if p0 > 1: ov[max(0, p0 - 2):p0, l0:l1] = [80, 40, 200]
+        if p1 < dh: ov[p1:min(dh, p1 + 2), l0:l1] = [80, 40, 200]
+
+    def _draw_stripe_v(ov, p0, p1, l0, l1):
+        p0, p1 = max(0, p0), min(dw, p1)
+        l0, l1 = max(0, l0), min(dh, l1)
+        if p1 > p0 and l1 > l0:
+            ov[l0:l1, p0:p1] = (ov[l0:l1, p0:p1] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
+        if p0 > 1: ov[l0:l1, max(0, p0 - 2):p0] = [80, 40, 200]
+        if p1 < dw: ov[l0:l1, p1:min(dw, p1 + 2)] = [80, 40, 200]
+
+    for s in stripes:
+        s_orient = s.get('orientation', stripe_orientation)
+        VIOLET = np.array([120, 80, 220])
+        DARK_V = np.array([80, 40, 200])
+
+        if s_orient == "Orizzontale":
+            off = s.get('offset_length', 50.0)
+            p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dh, dw))
+            _draw_stripe_h(overlay, p0, p1, l0, l1)
+
+        elif s_orient == "Verticale":
+            off = s.get('offset_length', 50.0)
+            p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dw, dh))
+            _draw_stripe_v(overlay, p0, p1, l0, l1)
+
+        elif s_orient == "Striscia Ruotata":
+            cx_r = int(s.get("cx", 50) / 100 * dw)
+            cy_r = int(s.get("cy", 50) / 100 * dh)
+            angle_rad_r = np.deg2rad(s.get("angle", 0))
+            cos_r, sin_r = np.cos(angle_rad_r), np.sin(angle_rad_r)
+            half_h_r = max(1, int(s.get("size", 15) / 100 * max(dh, dw) / 2))
+            half_w_r = max(1, int(s.get("length", 100) / 100 * max(dh, dw) / 2))
+            corners_r = np.array([[-half_w_r, -half_h_r], [half_w_r, -half_h_r],
+                                   [half_w_r, half_h_r], [-half_w_r, half_h_r]], dtype=np.float32)
+            rot_r = np.array([[cos_r, -sin_r], [sin_r, cos_r]])
+            pts_r = ((rot_r @ corners_r.T).T + np.array([cx_r, cy_r])).astype(np.int32)
+            mask_r = np.zeros((dh, dw), dtype=np.uint8)
+            cv2.fillPoly(mask_r, [pts_r], 255)
+            m3_r = mask_r[:, :, np.newaxis] / 255.0
+            overlay[:] = (overlay * (1 - m3_r * 0.65) + np.array([120, 80, 220]) * m3_r * 0.65).astype(np.uint8)
+            cv2.polylines(overlay, [pts_r], True, (80, 40, 200), 2)
+
+        elif s_orient == "Lancetta":
+            cx = int(s.get("cx", 50) / 100 * dw)
+            cy = int(s.get("cy", 50) / 100 * dh)
+            angle_rad = np.deg2rad(s.get("angle", 90))
+            length_px = int(s.get("length", 50) / 100 * max(dh, dw))
+            ex = int(cx + np.cos(angle_rad) * length_px)
+            ey = int(cy - np.sin(angle_rad) * length_px)
+            thickness = max(2, int(s.get("size", 15) * dw / 1000))
+            cv2.line(overlay, (cx, cy), (ex, ey), (120, 80, 220), thickness)
+            cv2.circle(overlay, (cx, cy), max(3, thickness), (80, 40, 200), -1)
+
+        elif s_orient == "Cerchio":
+            cx = int(s.get("cx", 50) / 100 * dw)
+            cy = int(s.get("cy", 50) / 100 * dh)
+            radius = max(1, int(s.get("radius", 30) / 100 * max(dh, dw) / 2))
+            if s.get("filled", True):
+                mask_c = np.zeros((dh, dw), dtype=np.uint8)
+                cv2.circle(mask_c, (cx, cy), radius, 255, -1)
+                m3 = mask_c[:, :, np.newaxis] / 255.0
+                overlay[:] = (overlay * (1 - m3 * 0.65) + VIOLET * m3 * 0.65).astype(np.uint8)
+            else:
+                cv2.circle(overlay, (cx, cy), radius, (120, 80, 220), max(2, s.get("size", 8)))
+    return overlay
 
 
 def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
@@ -1454,6 +1541,17 @@ with c2:
     # ---- STRISCE SELETTIVE ----
     dur = st.session_state.get("dur_input", 10)                          # prima di c3
     fmt_value = st.session_state.get("format_select", "16:9 (Orizzontale)")  # prima di c3
+
+    # la sezione Livelli gira dopo quella delle Strisce, ma per decidere quale anteprima
+    # mostrare (vedi più sotto) mi serve saperlo PRIMA — leggo lo stato già salvato dei
+    # widget dei livelli (se esistono da un run precedente).
+    _any_active_layer = False
+    for _li_chk in st.session_state.get('layer_ids', []):
+        _src_chk  = st.session_state.get(f"lyr_src_{_li_chk}")
+        _file_chk = st.session_state.get(f"lyr_file_{_li_chk}")
+        if _src_chk == "🌀 Calderone" or _file_chk is not None:
+            _any_active_layer = True
+            break
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
         help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
@@ -1719,96 +1817,34 @@ with c2:
         if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
 
         with stripe_preview_slot:
-         st.caption("🔍 Anteprima strisce")
-         if prev_choices:
-            prev_sel = st.selectbox("Anteprima su", prev_choices, label_visibility="collapsed")
-            pf = prev_files[prev_sel]
-            pf.seek(0)
-            prev_img   = np.array(Image.open(pf).convert("RGB"))
-            ph, pw     = prev_img.shape[:2]
-            scale      = 160 / max(ph, pw)
-            dw, dh     = int(pw * scale), int(ph * scale)
-            prev_small = cv2.resize(prev_img, (dw, dh))
-            overlay    = prev_small.copy()
+         if not _any_active_layer:
+            st.caption("🔍 Anteprima strisce")
+            if prev_choices:
+                prev_sel = st.selectbox("Anteprima su", prev_choices, label_visibility="collapsed")
+                pf = prev_files[prev_sel]
+                pf.seek(0)
+                prev_img_full = np.array(Image.open(pf).convert("RGB"))
 
-            def _draw_stripe_h(ov, p0, p1, l0, l1):
-                p0,p1 = max(0,p0), min(dh,p1)
-                l0,l1 = max(0,l0), min(dw,l1)
-                if p1>p0 and l1>l0:
-                    ov[p0:p1, l0:l1] = (ov[p0:p1, l0:l1]*0.35 + np.array([120,80,220])*0.65).astype(np.uint8)
-                if p0>1: ov[max(0,p0-2):p0, l0:l1] = [80,40,200]
-                if p1<dh: ov[p1:min(dh,p1+2), l0:l1] = [80,40,200]
+                _fmt_dims_sp = {"16:9 (Orizzontale)": (1280, 720),
+                                "9:16 (Verticale)":  (720, 1280),
+                                "1:1 (Quadrato)":    (1080, 1080)}
+                _fw_sp, _fh_sp = _fmt_dims_sp.get(fmt_value, (1280, 720))
+                st.caption(f"Formato: {fmt_value}")
+                prev_img_cropped = cover_crop(prev_img_full, _fw_sp, _fh_sp)  # come farà il render
 
-            def _draw_stripe_v(ov, p0, p1, l0, l1):
-                p0,p1 = max(0,p0), min(dw,p1)
-                l0,l1 = max(0,l0), min(dh,l1)
-                if p1>p0 and l1>l0:
-                    ov[l0:l1, p0:p1] = (ov[l0:l1, p0:p1]*0.35 + np.array([120,80,220])*0.65).astype(np.uint8)
-                if p0>1: ov[l0:l1, max(0,p0-2):p0] = [80,40,200]
-                if p1<dw: ov[l0:l1, p1:min(dw,p1+2)] = [80,40,200]
+                ph, pw     = prev_img_cropped.shape[:2]
+                scale      = 220 / max(ph, pw)
+                dw, dh     = int(pw * scale), int(ph * scale)
+                overlay    = cv2.resize(prev_img_cropped, (dw, dh)).copy()
 
-            for idx, s in enumerate(stripes):
-                s_orient = s.get('orientation', stripe_orientation)
-                VIOLET = np.array([120, 80, 220])
-                DARK_V = np.array([80, 40, 200])
+                draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw)
 
-                if s_orient == "Orizzontale":
-                    off = s.get('offset_length', 50.0)
-                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dh, dw))
-                    _draw_stripe_h(overlay, p0, p1, l0, l1)
-
-                elif s_orient == "Verticale":
-                    off = s.get('offset_length', 50.0)
-                    p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dw, dh))
-                    _draw_stripe_v(overlay, p0, p1, l0, l1)
-                elif s_orient == "Striscia Ruotata":
-                    cx_r = int(s.get("cx", 50) / 100 * dw)
-                    cy_r = int(s.get("cy", 50) / 100 * dh)
-                    angle_rad_r = np.deg2rad(s.get("angle", 0))
-                    cos_r, sin_r = np.cos(angle_rad_r), np.sin(angle_rad_r)
-                    half_h_r = max(1, int(s.get("size", 15) / 100 * max(dh, dw) / 2))
-                    half_w_r = max(1, int(s.get("length", 100) / 100 * max(dh, dw) / 2))
-                    corners_r = np.array([[-half_w_r,-half_h_r],[half_w_r,-half_h_r],
-                                          [half_w_r,half_h_r],[-half_w_r,half_h_r]], dtype=np.float32)
-                    rot_r = np.array([[cos_r,-sin_r],[sin_r,cos_r]])
-                    pts_r = ((rot_r @ corners_r.T).T + np.array([cx_r,cy_r])).astype(np.int32)
-                    mask_r = np.zeros((dh, dw), dtype=np.uint8)
-                    cv2.fillPoly(mask_r, [pts_r], 255)
-                    m3_r = mask_r[:,:,np.newaxis] / 255.0
-                    overlay[:] = (overlay*(1-m3_r*0.65) + np.array([120,80,220])*m3_r*0.65).astype(np.uint8)
-                    cv2.polylines(overlay, [pts_r], True, (80,40,200), 2)
-
-                elif s_orient == "Lancetta":
-                    cx = int(s.get("cx", 50) / 100 * dw)
-                    cy = int(s.get("cy", 50) / 100 * dh)
-                    angle_rad = np.deg2rad(s.get("angle", 90))
-                    length_px = int(s.get("length", 50) / 100 * max(dh, dw))
-                    ex = int(cx + np.cos(angle_rad) * length_px)
-                    ey = int(cy - np.sin(angle_rad) * length_px)
-                    thickness = max(2, int(s.get("size", 15) * dw / 1000))
-                    cv2.line(overlay, (cx, cy), (ex, ey), (120, 80, 220), thickness)
-                    cv2.circle(overlay, (cx, cy), max(3, thickness), (80, 40, 200), -1)
-
-                elif s_orient == "Cerchio":
-                    cx = int(s.get("cx", 50) / 100 * dw)
-                    cy = int(s.get("cy", 50) / 100 * dh)
-                    radius = int(s.get("radius", 30) / 100 * max(dh, dw) / 2)
-                    radius = max(1, radius)
-                    if s.get("filled", True):
-                        mask_c = np.zeros((dh, dw), dtype=np.uint8)
-                        cv2.circle(mask_c, (cx, cy), radius, 255, -1)
-                        m3 = mask_c[:, :, np.newaxis] / 255.0
-                        overlay[:] = (overlay * (1 - m3 * 0.65) + VIOLET * m3 * 0.65).astype(np.uint8)
-                    else:
-                        cv2.circle(overlay, (cx, cy), radius, (120, 80, 220), max(2, s.get("size", 8)))
-
-
-            caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
-            if stripe_reverse:
-                caption += " · REVERSE ON"
-            st.image(overlay, caption=caption, use_container_width=True)
-         else:
-            st.caption("Carica almeno una foto per vedere l'anteprima.")
+                caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
+                if stripe_reverse:
+                    caption += " · REVERSE ON"
+                st.image(overlay, caption=caption, use_container_width=True)
+            else:
+                st.caption("Carica almeno una foto per vedere l'anteprima.")
 
         st.divider()
 
@@ -2081,7 +2117,6 @@ with c2:
         st.rerun()
 
     with layer_preview_slot:
-        st.caption("🔍 Anteprima livelli")
         active_layers   = [l for l in layers if l.get('type') == 'png' and l.get('file') is not None]
         calderone_layers = [l for l in layers if l.get('type') == 'calderone']
         lp_choices = []
@@ -2090,51 +2125,57 @@ with c2:
         if up_m2: lp_choices.append("Master 2");             lp_files["Master 2"] = up_m2
         if up_t:  lp_choices.append("Prima foto Calderone"); lp_files["Prima foto Calderone"] = up_t[0]
 
-        if calderone_layers:
-            st.caption("🌀 Livello Calderone presente: si vede solo nel render, "
-                       "l'anteprima statica qui sotto mostra solo i livelli foto.")
+        if active_layers or calderone_layers:
+            st.caption("🔍 Anteprima livelli")
+            if calderone_layers:
+                st.caption("🌀 Livello Calderone presente: si vede solo nel render, "
+                           "l'anteprima statica qui sotto mostra solo i livelli foto (+ strisce, se attive).")
 
-        if not lp_choices:
-            st.caption("Carica almeno una foto (Master o Calderone) per vedere l'anteprima.")
-        elif not active_layers:
-            if not calderone_layers:
-                st.caption("Carica un PNG in un livello per vedere l'anteprima.")
-        else:
-            lprev_sel = st.selectbox("Anteprima su", lp_choices,
-                label_visibility="collapsed", key="layer_prev_sel")
-            lpf = lp_files[lprev_sel]
-            lpf.seek(0)
-            lprev_img_full = np.array(Image.open(lpf).convert("RGB"))
+            if not lp_choices:
+                st.caption("Carica una foto (Master o Calderone) per vedere l'anteprima.")
+            else:
+                lprev_sel = st.selectbox("Anteprima su", lp_choices,
+                    label_visibility="collapsed", key="layer_prev_sel")
+                lpf = lp_files[lprev_sel]
+                lpf.seek(0)
+                lprev_img_full = np.array(Image.open(lpf).convert("RGB"))
 
-            _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
-                         "9:16 (Verticale)":  (720, 1280),
-                         "1:1 (Quadrato)":    (1080, 1080)}
-            _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
-            st.caption(f"Formato: {fmt_value}")
-            # stesso ritaglio "cover" che userà davvero il render, per mostrare il formato corretto
-            lprev_img = cover_crop(lprev_img_full, _fw, _fh)
+                _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
+                             "9:16 (Verticale)":  (720, 1280),
+                             "1:1 (Quadrato)":    (1080, 1080)}
+                _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
+                st.caption(f"Formato: {fmt_value}")
+                # stesso ritaglio "cover" che userà davvero il render, per mostrare il formato corretto
+                lprev_img = cover_crop(lprev_img_full, _fw, _fh)
 
-            lph, lpw  = lprev_img.shape[:2]
-            lscale    = 220 / max(lph, lpw)
-            ldw, ldh  = int(lpw * lscale), int(lph * lscale)
-            lprev_small = cv2.resize(lprev_img, (ldw, ldh))
+                lph, lpw  = lprev_img.shape[:2]
+                lscale    = 220 / max(lph, lpw)
+                ldw, ldh  = int(lpw * lscale), int(lph * lscale)
+                lprev_small = cv2.resize(lprev_img, (ldw, ldh))
 
-            preview_layers = [{
-                'rgba':          prepare_layer_asset(l['file']),
-                'fit_mode':      l.get('fit_mode', 'cover'),
-                'blend_mode':    l['blend_mode'],
-                'base_opacity':  l['base_opacity'],
-                'pulse_opacity': 0.0,
-                'base_scale':    l['base_scale'],
-                'pulse_scale':   0.0,
-                'cx':            l['cx'],
-                'cy':            l['cy'],
-            } for l in active_layers]
+                preview_layers = [{
+                    'rgba':          prepare_layer_asset(l['file']),
+                    'fit_mode':      l.get('fit_mode', 'cover'),
+                    'blend_mode':    l['blend_mode'],
+                    'base_opacity':  l['base_opacity'],
+                    'pulse_opacity': 0.0,
+                    'base_scale':    l['base_scale'],
+                    'pulse_scale':   0.0,
+                    'cx':            l['cx'],
+                    'cy':            l['cy'],
+                } for l in active_layers]
 
-            preview_out = apply_layers(lprev_small, preview_layers, 0.0, ldh, ldw)
-            st.image(preview_out,
-                caption="Anteprima statica (opacità/scala base) — la pulsazione a BPM si vede solo nel render finale",
-                use_container_width=True)
+                preview_out = apply_layers(lprev_small, preview_layers, 0.0, ldh, ldw)
+
+                _capt = "Anteprima statica (opacità/scala base) — la pulsazione a BPM si vede solo nel render finale"
+                if stripe_mode and stripes:
+                    preview_out = preview_out.copy()
+                    draw_stripe_preview_overlay(preview_out, stripes, stripe_orientation, ldh, ldw)
+                    _capt += " · viola = striscia attiva"
+                    if stripe_reverse:
+                        _capt += " · REVERSE ON"
+
+                st.image(preview_out, caption=_capt, use_container_width=True)
 
 with c3:
     st.subheader("🎬 Rendering")
