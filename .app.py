@@ -613,22 +613,58 @@ def resolve_reactive_opacity(s_dict, base_opacity, beat_gate_val, beat_sync_on, 
     return base_opacity
 
 
+def make_simple_calderone_frame(pool_imgs, hold_sec, trans_sec, seq_mode, t, h, w):
+    """
+    Genera un frame 'leggero' per un Calderone extra: NESSUN glitch/slicing, solo una
+    foto del pool tenuta ferma per hold_sec e poi dissolta verso la successiva in
+    trans_sec — l'effetto visivo lo dà la forma della striscia che lo contiene, non
+    il Calderone stesso. pool_imgs deve già essere ridimensionato a (h, w).
+    """
+    if not pool_imgs:
+        return np.zeros((h, w, 3), dtype=np.uint8)
+    n = len(pool_imgs)
+    if n == 1:
+        return pool_imgs[0]
+
+    cycle = max(hold_sec + trans_sec, 0.1)
+    cycle_idx = int(t // cycle)
+    t_in_cycle = t - cycle_idx * cycle
+
+    if seq_mode:
+        idx_cur  = cycle_idx % n
+        idx_next = (cycle_idx + 1) % n
+    else:
+        idx_cur  = random.Random(cycle_idx).randrange(n)
+        idx_next = random.Random(cycle_idx + 1).randrange(n)
+
+    img_cur = pool_imgs[idx_cur]
+    if t_in_cycle < hold_sec or trans_sec <= 0:
+        return img_cur
+
+    img_next = pool_imgs[idx_next]
+    alpha = np.clip((t_in_cycle - hold_sec) / trans_sec, 0.0, 1.0)
+    return (img_cur.astype(np.float32) * (1 - alpha) + img_next.astype(np.float32) * alpha).astype(np.uint8)
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
                         stripe_reverse=False, audio_envelope_val=1.0,
                         stripe_offsets=None,
                         stripe_chroma=False, stripe_flash=False,
                         beat_val=0.0, beat_gate_val=0.0, beat_sync_on=False,
-                        t=0.0, total_dur=10.0):
+                        t=0.0, total_dur=10.0, extra_sources=None):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
              move_random, move_speed, offset_length, chroma_amount,
-             blend_mode, opacity
+             blend_mode, opacity, source
     stripe_chroma:  aberrazione cromatica dentro la striscia
     stripe_flash:   striscia si spegne (mostra bg) sui beat forti
     beat_val:       valore beat envelope corrente (0-1), dipende dal 'Beat Decay' del genere
     beat_gate_val:  on/off puro (0 o 1) legato solo al periodo del BPM, per lo strobe
     beat_sync_on:   True se 'A tempo di musica' è attivo con audio caricato
+    extra_sources:  dict {nome_sorgente: frame_rgb} — Calderoni extra / Foto Fisse selezionabili
+                    per singola striscia via s['source']. 'Calderone' (il comportamento di
+                    sempre) è sempre disponibile e riflette stripe_reverse dinamicamente.
     """
     if stripe_offsets is None:
         stripe_offsets = [50.0] * len(stripes)
@@ -645,23 +681,27 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         out = bg_frame.copy()
         src_stripe = src_calder
 
-    def _paste_h(p0, p1, l0, l1, chroma_amt, mode, opacity):
+    sources = {'Calderone': src_stripe}
+    if extra_sources:
+        sources.update(extra_sources)
+
+    def _paste_h(src, p0, p1, l0, l1, chroma_amt, mode, opacity):
         if p1 > p0 and l1 > l0:
-            patch = src_stripe[p0:p1, l0:l1].copy()
+            patch = src[p0:p1, l0:l1].copy()
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[p0:p1, l0:l1]
             out[p0:p1, l0:l1] = blend_patch(base_patch, patch, mode, opacity)
 
-    def _paste_v(p0, p1, l0, l1, chroma_amt, mode, opacity):
+    def _paste_v(src, p0, p1, l0, l1, chroma_amt, mode, opacity):
         if p1 > p0 and l1 > l0:
-            patch = src_stripe[l0:l1, p0:p1].copy()
+            patch = src[l0:l1, p0:p1].copy()
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[l0:l1, p0:p1]
             out[l0:l1, p0:p1] = blend_patch(base_patch, patch, mode, opacity)
 
-    def _draw(s, offset, is_h):
+    def _draw(s, offset, is_h, src):
         if flash_active:
             return  # striscia spenta sul beat
         center   = kf_get(s, 'center', t, total_dur, s.get('center', 50))
@@ -678,9 +718,9 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
-            _paste_h(p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
+            _paste_h(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
         else:
-            _paste_v(p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
+            _paste_v(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
 
     for idx, s in enumerate(stripes):
         if flash_active:
@@ -691,6 +731,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         mode    = s.get('blend_mode', 'Normal')
         opacity = float(s.get('opacity', 1.0))
         chroma_on = stripe_chroma and chroma_amt > 0
+        this_src = sources.get(s.get('source', 'Calderone'), src_stripe)
 
         if s_orient == "Lancetta":
             # angolo base + rotazione automatica nel tempo (offset usato come angolo corrente)
@@ -701,7 +742,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_rotate')
-            draw_lancetta(out, src_stripe, h, w,
+            draw_lancetta(out, this_src, h, w,
                           s.get('cx', 50.0), s.get('cy', 50.0),
                           angle, length_pct,
                           int(kf_get(s, 'size', t, total_dur, s.get('size', 10))),
@@ -714,7 +755,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             radius = resolve_reactive_val(s, radius, offset, 'auto_expand')
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_expand')
-            draw_cerchio(out, src_stripe, h, w,
+            draw_cerchio(out, this_src, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
                          radius, s.get('filled', True),
                          int(kf_get(s, 'size', t, total_dur, s.get('size', 8))),
@@ -728,7 +769,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_rotate')
-            draw_striscia_ruotata(out, src_stripe, h, w,
+            draw_striscia_ruotata(out, this_src, h, w,
                                   s.get('cx', 50.0), s.get('cy', 50.0),
                                   angle,
                                   float(kf_get(s, 'size', t, total_dur, s.get('size', 15.0))),
@@ -736,7 +777,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                                   chroma_on, chroma_amt, mode, opacity)
 
         elif s_orient in ("Orizzontale", "Verticale"):
-            _draw(s, offset, s_orient == "Orizzontale")
+            _draw(s, offset, s_orient == "Orizzontale", this_src)
 
     return out
 
@@ -920,7 +961,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     global_chroma=False, global_chroma_amt=6,
                     global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
                     manual_bpm=None, onset_sensitivity=None,
-                    layers=None):
+                    layers=None, extra_calderoni_cfg=None, foto_fisse_files=None):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -940,6 +981,35 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         pool_imgs = [np.zeros((360, 640, 3), dtype=np.uint8)]
 
     h, w = pool_imgs[0].shape[:2]
+
+    # --- CALDERONI EXTRA (leggeri, no glitch: solo foto + dissolvenza) e FOTO FISSE ---
+    # entrambi selezionabili come 'source' per singola striscia, in alternativa al Calderone.
+    extra_calderoni_pools = []  # lista di dict: {label, pool, hold_sec, trans_sec}
+    if extra_calderoni_cfg:
+        for _idx_ec, _ecfg in enumerate(extra_calderoni_cfg, start=2):
+            _ec_files = _ecfg.get('files') or []
+            if _ec_files:
+                extra_calderoni_pools.append({
+                    'label':     f"Calderone {_idx_ec}",
+                    'pool':      [load_img_half(f) for f in _ec_files],
+                    'hold_sec':  _ecfg.get('hold_sec', 2.0),
+                    'trans_sec': _ecfg.get('trans_sec', 0.5),
+                })
+
+    foto_fisse_imgs = {}  # {'Foto Fissa 1': frame_rgb, ...}
+    if foto_fisse_files:
+        for _ffi, _fff in enumerate(foto_fisse_files):
+            foto_fisse_imgs[f"Foto Fissa {_ffi+1}"] = load_img_half(_fff)
+
+    def build_extra_sources(cur_t):
+        """Costruisce il dict {nome_sorgente: frame} per le strisce che pescano da
+        Calderoni extra o Foto Fisse, al tempo cur_t. Le Foto Fisse sono statiche
+        (nessun calcolo), i Calderoni extra pulsano con hold+dissolvenza leggera."""
+        _es = dict(foto_fisse_imgs)
+        for _ecp in extra_calderoni_pools:
+            _es[_ecp['label']] = make_simple_calderone_frame(
+                _ecp['pool'], _ecp['hold_sec'], _ecp['trans_sec'], seq_mode, cur_t, h, w)
+        return _es
 
     # --- LIVELLI (stile Photoshop): PNG con alpha o il Calderone stesso, pulsano a tempo di BPM ---
     layers_prepared = []
@@ -1146,7 +1216,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
                                                     stripe_chroma, stripe_flash, _bval, _bgate,
-                                                    t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
+                                                    t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                                    extra_sources=build_extra_sources(t))
                 else:
                     out_frame = img_cur
                 return _finalize(out_frame, f, t)
@@ -1169,7 +1240,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
-                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                                        extra_sources=build_extra_sources(t))
                     else:
                         out_frame = glitched
                 else:
@@ -1181,7 +1253,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
-                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                                        extra_sources=build_extra_sources(t))
                     else:
                         out_frame = glitched
 
@@ -1314,7 +1387,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
-                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None)),
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                            extra_sources=build_extra_sources(t)),
                         f, t)
                 return _finalize(pick(), f, t)
 
@@ -1366,7 +1440,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval, _bgate,
-                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                            extra_sources=build_extra_sources(t))
 
             # --- Effetti globali standalone (senza strisce selettive) ---
             if not stripe_mode:
@@ -1500,44 +1575,56 @@ st.title("Recursive-Cut-Photo by Loop507 🔪")
 # già quello corrente scelto dall'utente, non un passo indietro.
 
 c1, c2, c3 = st.columns([1, 1.2, 1])
-
+bottom_container = st.container()  # riga sotto: Strisce | Livelli affiancate
 with c1:
     st.subheader("🖼️ Assets")
+    st.caption("🔀 Transizione (dissolvenza inizio/fine)")
     up_m1 = st.file_uploader("MASTER 1 — inizio", type=["jpg","png","jpeg"])
     up_m2 = st.file_uploader("MASTER 2 — fine",   type=["jpg","png","jpeg"])
     st.divider()
     up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
     st.divider()
+
+    calderoni_extra_on = st.toggle("🖇️ Calderoni extra (per il collage nelle strisce)", value=False,
+        key="calderoni_extra_on",
+        help="Pool di foto aggiuntivi, SENZA glitch — solo foto ferma + dissolvenza. "
+             "L'effetto visivo lo dà la forma della striscia che li contiene (tonda, lancetta...), "
+             "non il Calderone extra stesso. Selezionabili come sorgente per singola striscia.")
+    extra_calderoni_cfg = []  # lista di dict: {pool_files, hold_sec, trans_sec} anche vuoti
+    if calderoni_extra_on:
+        for _eci in range(2, 5):  # Calderone 2, 3, 4
+            st.caption(f"Calderone {_eci}")
+            _ef = st.file_uploader(f"Foto — Calderone {_eci}", type=["jpg","png","jpeg"],
+                accept_multiple_files=True, key=f"extra_calderone_files_{_eci}",
+                label_visibility="collapsed")
+            _cec1, _cec2 = st.columns(2)
+            with _cec1:
+                _hold = st.slider("Tieni ferma (sec)", 0.2, 10.0, 2.0, step=0.1, key=f"extra_calderone_hold_{_eci}")
+            with _cec2:
+                _trans = st.slider("Dissolvenza (sec)", 0.0, 5.0, 0.5, step=0.1, key=f"extra_calderone_trans_{_eci}")
+            extra_calderoni_cfg.append({'files': _ef, 'hold_sec': _hold, 'trans_sec': _trans})
+        st.divider()
+
+    foto_fisse_on = st.toggle("🌫️ Foto Fisse (per il collage nelle strisce)", value=False,
+        key="foto_fisse_on",
+        help="Fino a 6 foto statiche selezionabili come sorgente per singola striscia, "
+             "in alternativa al Calderone.")
+    foto_fisse_files = []
+    if foto_fisse_on:
+        foto_fisse_files = st.file_uploader("Foto fisse (fino a 6)", type=["jpg","png","jpeg"],
+            accept_multiple_files=True, key="foto_fisse_files", label_visibility="collapsed") or []
+        if len(foto_fisse_files) > 6:
+            st.caption("⚠️ Solo le prime 6 verranno usate.")
+            foto_fisse_files = foto_fisse_files[:6]
+        st.divider()
+
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
 
     st.divider()
     stripe_preview_slot = st.container()
     layer_preview_slot = st.container()
 
-with c2:
-    st.subheader("✂️ Controllo")
-
-    has_masters = (up_m1 is not None) and (up_m2 is not None)
-    if has_masters:
-        st.caption("Transizione M1 → Calderone → M2")
-        m1_end_t  = st.slider("M1 sparisce a (%)",  0, 100, 50) / 100.0
-        m2_start_t = st.slider("M2 appare a (%)", 0, 100, 60) / 100.0
-        if m2_start_t < m1_end_t:
-            st.caption("⚠️ M2 appare prima che M1 finisca — si sovrappongono.")
-        st.divider()
-    else:
-        m1_end_t, m2_start_t = 0.5, 0.6
-        if up_m1 or up_m2:
-            st.caption("⚠️ Carica entrambi i Master per attivare la transizione.")
-
-    chaos  = st.slider("🌀 Chaos", 0, 100, 50)
-    speed  = st.slider("⚡ Photo Speed (fps)", 1, 24, 6)
-    lines  = st.slider("📐 Strand (px)", 1, 500, 45)
-    rand_l = st.toggle("Dynamic Slicing", value=True)
-    mode   = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
-
-    st.divider()
-
+with bottom_container:
     # ---- STRISCE SELETTIVE ----
     dur = st.session_state.get("dur_input", 10)                          # prima di c3
     fmt_value = st.session_state.get("format_select", "16:9 (Orizzontale)")  # prima di c3
@@ -1555,8 +1642,8 @@ with c2:
                 break
     layers = []
 
-    tab_strisce, tab_livelli = st.tabs(["🎯 Strisce Selettive", "🖼️ Livelli"])
-    with tab_strisce:
+    col_s, col_l = st.columns(2)
+    with col_s:
         stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
             help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
@@ -1647,6 +1734,18 @@ with c2:
                         'blend_mode':    'Normal',
                         'opacity':       1.0,
                     }
+
+                    _src_opts = ["Calderone"]
+                    for _eci_idx, _ecfg in enumerate(extra_calderoni_cfg, start=2):
+                        if _ecfg['files']:
+                            _src_opts.append(f"Calderone {_eci_idx}")
+                    for _ffi in range(len(foto_fisse_files)):
+                        _src_opts.append(f"Foto Fissa {_ffi+1}")
+                    if len(_src_opts) > 1:
+                        s_dict['source'] = st.selectbox("🖇️ Sorgente", _src_opts, key=f"ssrc_{i}",
+                            help="Da dove pesca questa striscia. 'Calderone' = il comportamento normale.")
+                    else:
+                        s_dict['source'] = "Calderone"
 
                     st.divider()
 
@@ -1953,7 +2052,7 @@ with c2:
             stripe_chroma = False
             stripe_flash  = False
 
-    with tab_livelli:
+    with col_l:
         layers_panel_on = st.toggle("🖼️ Livelli (PNG o Calderone impilati, stile Photoshop)", value=False,
             key="layers_panel_on",
             help="Foto (PNG) o il Calderone stesso, impilati stile Photoshop. Opacità e scala pulsano "
@@ -2040,88 +2139,6 @@ with c2:
                         l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lyr_cy_{li}",
                             help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
 
-                    st.divider()
-                    st.caption("📍 Keyframe posizione — sposta X/Y sopra, scegli il secondo, poi registra il punto.")
-
-                    kf_state_key = f"kf_layer_{li}"
-                    if kf_state_key not in st.session_state:
-                        st.session_state[kf_state_key] = {'cx': [], 'cy': []}
-                    kf_state = st.session_state[kf_state_key]
-
-                    col_kt, col_kb = st.columns([3, 1])
-                    with col_kt:
-                        kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lyr_kft_{li}")
-                    with col_kb:
-                        st.write("")
-                        if st.button("📍 Crea keyframe qui", key=f"lyr_kfadd_{li}"):
-                            t_r = round(float(kf_t_cur), 2)
-                            kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - t_r) > 1e-6] + \
-                                              [{'t': t_r, 'v': l_dict['cx']}]
-                            kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - t_r) > 1e-6] + \
-                                              [{'t': t_r, 'v': l_dict['cy']}]
-                            kf_state['cx'].sort(key=lambda k: k['t'])
-                            kf_state['cy'].sort(key=lambda k: k['t'])
-                            st.session_state[kf_state_key] = kf_state
-
-                    _kf_times = sorted(set([k['t'] for k in kf_state['cx']] + [k['t'] for k in kf_state['cy']]))
-                    if _kf_times:
-                        _to_del_t = None
-                        for tt in _kf_times:
-                            xv = next((k['v'] for k in kf_state['cx'] if abs(k['t'] - tt) < 1e-6), None)
-                            yv = next((k['v'] for k in kf_state['cy'] if abs(k['t'] - tt) < 1e-6), None)
-                            r1, r2, r3 = st.columns([2, 3, 1])
-                            with r1: st.caption(f"t = **{tt:.1f}s**")
-                            with r2: st.caption(f"X {xv:.0f}% · Y {yv:.0f}%")
-                            with r3:
-                                if st.button("✕", key=f"lyr_kfdel_{li}_{tt}"):
-                                    _to_del_t = tt
-                        if _to_del_t is not None:
-                            kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - _to_del_t) > 1e-6]
-                            kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - _to_del_t) > 1e-6]
-                            st.session_state[kf_state_key] = kf_state
-                            st.rerun()
-                    else:
-                        st.caption("— Nessun keyframe: la posizione resta fissa a X/Y per tutta la durata.")
-
-                    l_dict['keyframes'] = kf_state
-
-                    layers.append(l_dict)
-
-            if _to_delete_layer is not None:
-                st.session_state.layer_ids.remove(_to_delete_layer)
-                st.rerun()
-
-
-    st.divider()
-
-    with st.expander("✨ Effetti globali sul render (chroma, flash beat)", expanded=False):
-        # --- EFFETTI GLOBALI — disponibili sempre, anche senza strisce selettive ---
-        col_gfx1, col_gfx2 = st.columns(2)
-        with col_gfx1:
-            global_chroma = st.toggle("🌈 Chroma aberration", value=False, key="global_chroma",
-                help="Aberrazione cromatica su tutto il frame (o su tutte le strisce se attive)")
-            global_chroma_amt = 6
-            if global_chroma:
-                global_chroma_amt = st.slider("Intensità chroma (px)", 1, 30, 6, key="global_chroma_amt",
-                    help="Quanti pixel sfasa i canali R e B")
-            if stripe_mode and global_chroma:
-                stripe_chroma = True
-        with col_gfx2:
-            global_flash = st.toggle("⚡ Flash beat", value=False, key="global_flash",
-                help="Il frame lampeggia sui beat forti (richiede audio).")
-            global_flash_threshold = 0.7
-            global_flash_intensity = 100
-            if global_flash:
-                global_flash_threshold = st.slider("Soglia beat (%)", 0, 100, 70, key="global_flash_thr",
-                    help="Quanto deve essere forte il beat per far scattare il flash. 0=sempre, 100=solo sui picchi massimi.") / 100.0
-                global_flash_intensity = st.slider("Intensità flash (%)", 0, 100, 100, key="global_flash_int",
-                    help="100=frame bianco/pulito totale, valori bassi=flash parziale miscelato")
-            if stripe_mode and global_flash:
-                stripe_flash = True
-
-    st.divider()
-    seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
-        help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
     with layer_preview_slot:
         active_layers   = [l for l in layers if l.get('type') == 'png' and l.get('file') is not None]
         calderone_layers = [l for l in layers if l.get('type') == 'calderone']
@@ -2182,6 +2199,59 @@ with c2:
                         _capt += " · REVERSE ON"
 
                 st.image(preview_out, caption=_capt, use_container_width=True)
+
+
+with c2:
+    st.subheader("✂️ Controllo")
+
+    has_masters = (up_m1 is not None) and (up_m2 is not None)
+    if has_masters:
+        st.caption("Transizione M1 → Calderone → M2")
+        m1_end_t  = st.slider("M1 sparisce a (%)",  0, 100, 50) / 100.0
+        m2_start_t = st.slider("M2 appare a (%)", 0, 100, 60) / 100.0
+        if m2_start_t < m1_end_t:
+            st.caption("⚠️ M2 appare prima che M1 finisca — si sovrappongono.")
+        st.divider()
+    else:
+        m1_end_t, m2_start_t = 0.5, 0.6
+        if up_m1 or up_m2:
+            st.caption("⚠️ Carica entrambi i Master per attivare la transizione.")
+
+    chaos  = st.slider("🌀 Chaos", 0, 100, 50)
+    speed  = st.slider("⚡ Photo Speed (fps)", 1, 24, 6)
+    lines  = st.slider("📐 Strand (px)", 1, 500, 45)
+    rand_l = st.toggle("Dynamic Slicing", value=True)
+    mode   = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
+
+    st.divider()
+    with st.expander("✨ Effetti globali sul render (chroma, flash beat)", expanded=False):
+        # --- EFFETTI GLOBALI — disponibili sempre, anche senza strisce selettive ---
+        col_gfx1, col_gfx2 = st.columns(2)
+        with col_gfx1:
+            global_chroma = st.toggle("🌈 Chroma aberration", value=False, key="global_chroma",
+                help="Aberrazione cromatica su tutto il frame (o su tutte le strisce se attive)")
+            global_chroma_amt = 6
+            if global_chroma:
+                global_chroma_amt = st.slider("Intensità chroma (px)", 1, 30, 6, key="global_chroma_amt",
+                    help="Quanti pixel sfasa i canali R e B")
+            if stripe_mode and global_chroma:
+                stripe_chroma = True
+        with col_gfx2:
+            global_flash = st.toggle("⚡ Flash beat", value=False, key="global_flash",
+                help="Il frame lampeggia sui beat forti (richiede audio).")
+            global_flash_threshold = 0.7
+            global_flash_intensity = 100
+            if global_flash:
+                global_flash_threshold = st.slider("Soglia beat (%)", 0, 100, 70, key="global_flash_thr",
+                    help="Quanto deve essere forte il beat per far scattare il flash. 0=sempre, 100=solo sui picchi massimi.") / 100.0
+                global_flash_intensity = st.slider("Intensità flash (%)", 0, 100, 100, key="global_flash_int",
+                    help="100=frame bianco/pulito totale, valori bassi=flash parziale miscelato")
+            if stripe_mode and global_flash:
+                stripe_flash = True
+
+    st.divider()
+    seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
+        help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
 
 with c3:
     st.subheader("🎬 Rendering")
@@ -2290,7 +2360,8 @@ with c3:
             global_chroma, global_chroma_amt,
             global_flash, global_flash_threshold, global_flash_intensity,
             manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity,
-            layers=layers
+            layers=layers,
+            extra_calderoni_cfg=extra_calderoni_cfg, foto_fisse_files=foto_fisse_files
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
