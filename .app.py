@@ -1546,12 +1546,13 @@ with c2:
     # mostrare (vedi più sotto) mi serve saperlo PRIMA — leggo lo stato già salvato dei
     # widget dei livelli (se esistono da un run precedente).
     _any_active_layer = False
-    for _li_chk in st.session_state.get('layer_ids', []):
-        _src_chk  = st.session_state.get(f"lyr_src_{_li_chk}")
-        _file_chk = st.session_state.get(f"lyr_file_{_li_chk}")
-        if _src_chk == "🌀 Calderone" or _file_chk is not None:
-            _any_active_layer = True
-            break
+    if st.session_state.get("layers_panel_on", False):
+        for _li_chk in st.session_state.get('layer_ids', []):
+            _src_chk  = st.session_state.get(f"lyr_src_{_li_chk}")
+            _file_chk = st.session_state.get(f"lyr_file_{_li_chk}")
+            if _src_chk == "🌀 Calderone" or _file_chk is not None:
+                _any_active_layer = True
+                break
     stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
         help="Sfondo + finestre che mostrano il Calderone in movimento.")
 
@@ -1845,8 +1846,7 @@ with c2:
                 st.image(overlay, caption=caption, use_container_width=True)
             else:
                 st.caption("Carica almeno una foto per vedere l'anteprima.")
-
-        st.divider()
+            st.divider()
 
         # --- EFFETTI GLOBALI STRISCIA ---
         col_fx1, col_fx2 = st.columns(2)
@@ -1951,170 +1951,173 @@ with c2:
 
     st.divider()
 
-    # --- EFFETTI GLOBALI — disponibili sempre, anche senza strisce selettive ---
-    st.caption("✨ Effetti globali sul render")
-    col_gfx1, col_gfx2 = st.columns(2)
-    with col_gfx1:
-        global_chroma = st.toggle("🌈 Chroma aberration", value=False, key="global_chroma",
-            help="Aberrazione cromatica su tutto il frame (o su tutte le strisce se attive)")
-        global_chroma_amt = 6
-        if global_chroma:
-            global_chroma_amt = st.slider("Intensità chroma (px)", 1, 30, 6, key="global_chroma_amt",
-                help="Quanti pixel sfasa i canali R e B")
-        if stripe_mode and global_chroma:
-            stripe_chroma = True
-    with col_gfx2:
-        global_flash = st.toggle("⚡ Flash beat", value=False, key="global_flash",
-            help="Il frame lampeggia sui beat forti (richiede audio).")
-        global_flash_threshold = 0.7
-        global_flash_intensity = 100
-        if global_flash:
-            global_flash_threshold = st.slider("Soglia beat (%)", 0, 100, 70, key="global_flash_thr",
-                help="Quanto deve essere forte il beat per far scattare il flash. 0=sempre, 100=solo sui picchi massimi.") / 100.0
-            global_flash_intensity = st.slider("Intensità flash (%)", 0, 100, 100, key="global_flash_int",
-                help="100=frame bianco/pulito totale, valori bassi=flash parziale miscelato")
-        if stripe_mode and global_flash:
-            stripe_flash = True
+    with st.expander("✨ Effetti globali sul render (chroma, flash beat)", expanded=False):
+        # --- EFFETTI GLOBALI — disponibili sempre, anche senza strisce selettive ---
+        col_gfx1, col_gfx2 = st.columns(2)
+        with col_gfx1:
+            global_chroma = st.toggle("🌈 Chroma aberration", value=False, key="global_chroma",
+                help="Aberrazione cromatica su tutto il frame (o su tutte le strisce se attive)")
+            global_chroma_amt = 6
+            if global_chroma:
+                global_chroma_amt = st.slider("Intensità chroma (px)", 1, 30, 6, key="global_chroma_amt",
+                    help="Quanti pixel sfasa i canali R e B")
+            if stripe_mode and global_chroma:
+                stripe_chroma = True
+        with col_gfx2:
+            global_flash = st.toggle("⚡ Flash beat", value=False, key="global_flash",
+                help="Il frame lampeggia sui beat forti (richiede audio).")
+            global_flash_threshold = 0.7
+            global_flash_intensity = 100
+            if global_flash:
+                global_flash_threshold = st.slider("Soglia beat (%)", 0, 100, 70, key="global_flash_thr",
+                    help="Quanto deve essere forte il beat per far scattare il flash. 0=sempre, 100=solo sui picchi massimi.") / 100.0
+                global_flash_intensity = st.slider("Intensità flash (%)", 0, 100, 100, key="global_flash_int",
+                    help="100=frame bianco/pulito totale, valori bassi=flash parziale miscelato")
+            if stripe_mode and global_flash:
+                stripe_flash = True
 
     st.divider()
     seq_mode = st.toggle("🔢 Sequenza Ordinata", value=False,
         help="Le foto del Calderone vengono usate in ordine (1→2→3…) invece che random.")
 
     st.divider()
-    st.subheader("🖼️ Livelli")
-    st.caption("Foto (PNG) o il Calderone stesso, impilati stile Photoshop. Opacità e scala pulsano "
-               "in continuazione a tempo del BPM (attivabile/disattivabile per livello). "
-               "La posizione X/Y può anche essere animata con keyframe.")
-
-    col_laddd, col_lninfo = st.columns([1, 2])
-    with col_laddd:
-        if st.button("➕ Aggiungi livello", key="add_layer"):
-            st.session_state.layer_ids.append(st.session_state.layer_next_id)
-            st.session_state.layer_next_id += 1
-    with col_lninfo:
-        st.caption(f"{len(st.session_state.layer_ids)} livello/i attivi")
+    layers_panel_on = st.toggle("🖼️ Livelli (PNG o Calderone impilati, stile Photoshop)", value=False,
+        key="layers_panel_on",
+        help="Foto (PNG) o il Calderone stesso, impilati stile Photoshop. Opacità e scala pulsano "
+             "in continuazione a tempo del BPM (attivabile/disattivabile per livello). "
+             "La posizione X/Y può anche essere animata con keyframe.")
 
     layers = []
-    _to_delete_layer = None
 
-    for _lidx, li in enumerate(list(st.session_state.layer_ids)):
-        if _to_delete_layer == li:
-            continue
+    if layers_panel_on:
+        col_laddd, col_lninfo = st.columns([1, 2])
+        with col_laddd:
+            if st.button("➕ Aggiungi livello", key="add_layer"):
+                st.session_state.layer_ids.append(st.session_state.layer_next_id)
+                st.session_state.layer_next_id += 1
+        with col_lninfo:
+            st.caption(f"{len(st.session_state.layer_ids)} livello/i attivi")
 
-        with st.expander(f"Livello {_lidx+1}", expanded=(_lidx == 0), key=f"exp_layer_{li}"):
-            if st.button(f"🗑️ Elimina livello {_lidx+1}", key=f"del_layer_{li}"):
-                _to_delete_layer = li
+        _to_delete_layer = None
+
+        for _lidx, li in enumerate(list(st.session_state.layer_ids)):
+            if _to_delete_layer == li:
                 continue
 
-            l_source = st.radio("Sorgente livello", ["📁 Foto (PNG)", "🌀 Calderone"],
-                horizontal=True, key=f"lyr_src_{li}",
-                help="Calderone: usa l'output del Calderone (con le sue impostazioni normali) "
-                     "come contenuto di questo livello — così puoi impilarlo, dargli un blend "
-                     "mode/opacità/posizione propri, insieme ad altre foto sopra o sotto.")
+            with st.expander(f"Livello {_lidx+1}", expanded=(_lidx == 0), key=f"exp_layer_{li}"):
+                if st.button(f"🗑️ Elimina livello {_lidx+1}", key=f"del_layer_{li}"):
+                    _to_delete_layer = li
+                    continue
 
-            if l_source == "📁 Foto (PNG)":
-                l_file = st.file_uploader("Immagine (PNG con trasparenza, o JPG/JPEG)",
-                    type=["png", "jpg", "jpeg"], key=f"lyr_file_{li}",
-                    help="PNG con alpha: le zone trasparenti restano trasparenti. "
-                         "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
-                         "(l'opacità/pulsazione del livello funziona comunque).")
-                l_fit = st.radio("Adattamento al formato", 
-                    ["🔲 Riempi (ritaglia, come il Calderone)", "🖼️ Contieni (mostra tutta l'immagine)"],
-                    horizontal=True, key=f"lyr_fit_{li}",
-                    help="Riempi: ritaglia i bordi in eccesso per coprire tutto il fotogramma, "
-                         "senza barre vuote — stesso comportamento del Calderone. "
-                         "Contieni: mostra l'immagine intera, può lasciare bordi trasparenti "
-                         "se le proporzioni non coincidono con il formato video (utile per loghi/PNG con trasparenza).")
-                l_dict = {'file': l_file, 'type': 'png',
-                          'fit_mode': 'cover' if l_fit.startswith("🔲") else 'contain'}
-            else:
-                l_dict = {'file': None, 'type': 'calderone'}
-                st.caption("Il Calderone gira sempre con le sue impostazioni normali — qui scegli "
-                           "solo come inserirlo nella pila dei livelli.")
+                l_source = st.radio("Sorgente livello", ["📁 Foto (PNG)", "🌀 Calderone"],
+                    horizontal=True, key=f"lyr_src_{li}",
+                    help="Calderone: usa l'output del Calderone (con le sue impostazioni normali) "
+                         "come contenuto di questo livello — così puoi impilarlo, dargli un blend "
+                         "mode/opacità/posizione propri, insieme ad altre foto sopra o sotto.")
 
-            col_lb1, col_lb2 = st.columns(2)
-            with col_lb1:
-                l_dict['blend_mode'] = st.selectbox("Blend mode",
-                    ["Normal", "Screen", "Multiply", "Difference"], key=f"lyr_bm_{li}")
-            with col_lb2:
-                l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lyr_sc_{li}",
-                    help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
+                if l_source == "📁 Foto (PNG)":
+                    l_file = st.file_uploader("Immagine (PNG con trasparenza, o JPG/JPEG)",
+                        type=["png", "jpg", "jpeg"], key=f"lyr_file_{li}",
+                        help="PNG con alpha: le zone trasparenti restano trasparenti. "
+                             "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
+                             "(l'opacità/pulsazione del livello funziona comunque).")
+                    l_fit = st.radio("Adattamento al formato", 
+                        ["🔲 Riempi (ritaglia, come il Calderone)", "🖼️ Contieni (mostra tutta l'immagine)"],
+                        horizontal=True, key=f"lyr_fit_{li}",
+                        help="Riempi: ritaglia i bordi in eccesso per coprire tutto il fotogramma, "
+                             "senza barre vuote — stesso comportamento del Calderone. "
+                             "Contieni: mostra l'immagine intera, può lasciare bordi trasparenti "
+                             "se le proporzioni non coincidono con il formato video (utile per loghi/PNG con trasparenza).")
+                    l_dict = {'file': l_file, 'type': 'png',
+                              'fit_mode': 'cover' if l_fit.startswith("🔲") else 'contain'}
+                else:
+                    l_dict = {'file': None, 'type': 'calderone'}
+                    st.caption("Il Calderone gira sempre con le sue impostazioni normali — qui scegli "
+                               "solo come inserirlo nella pila dei livelli.")
 
-            l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lyr_op_{li}")
+                col_lb1, col_lb2 = st.columns(2)
+                with col_lb1:
+                    l_dict['blend_mode'] = st.selectbox("Blend mode",
+                        ["Normal", "Screen", "Multiply", "Difference"], key=f"lyr_bm_{li}")
+                with col_lb2:
+                    l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lyr_sc_{li}",
+                        help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
 
-            l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lyr_br_{li}",
-                help="ON: il livello pulsa (opacità/scala) a tempo del BPM. OFF: resta fisso ai valori base.")
+                l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lyr_op_{li}")
 
-            if l_dict['beat_react']:
-                col_lp1, col_lp2 = st.columns(2)
-                with col_lp1:
-                    l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lyr_po_{li}",
-                        help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
-                with col_lp2:
-                    l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lyr_ps_{li}",
-                        help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
-            else:
-                l_dict['pulse_opacity'] = 0.0
-                l_dict['pulse_scale']   = 0.0
+                l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lyr_br_{li}",
+                    help="ON: il livello pulsa (opacità/scala) a tempo del BPM. OFF: resta fisso ai valori base.")
 
-            col_lx, col_ly = st.columns(2)
-            with col_lx:
-                l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lyr_cx_{li}",
-                    help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
-            with col_ly:
-                l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lyr_cy_{li}",
-                    help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
+                if l_dict['beat_react']:
+                    col_lp1, col_lp2 = st.columns(2)
+                    with col_lp1:
+                        l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lyr_po_{li}",
+                            help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
+                    with col_lp2:
+                        l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lyr_ps_{li}",
+                            help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
+                else:
+                    l_dict['pulse_opacity'] = 0.0
+                    l_dict['pulse_scale']   = 0.0
 
-            st.divider()
-            st.caption("📍 Keyframe posizione — sposta X/Y sopra, scegli il secondo, poi registra il punto.")
+                col_lx, col_ly = st.columns(2)
+                with col_lx:
+                    l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lyr_cx_{li}",
+                        help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
+                with col_ly:
+                    l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lyr_cy_{li}",
+                        help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
 
-            kf_state_key = f"kf_layer_{li}"
-            if kf_state_key not in st.session_state:
-                st.session_state[kf_state_key] = {'cx': [], 'cy': []}
-            kf_state = st.session_state[kf_state_key]
+                st.divider()
+                st.caption("📍 Keyframe posizione — sposta X/Y sopra, scegli il secondo, poi registra il punto.")
 
-            col_kt, col_kb = st.columns([3, 1])
-            with col_kt:
-                kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lyr_kft_{li}")
-            with col_kb:
-                st.write("")
-                if st.button("📍 Crea keyframe qui", key=f"lyr_kfadd_{li}"):
-                    t_r = round(float(kf_t_cur), 2)
-                    kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - t_r) > 1e-6] + \
-                                      [{'t': t_r, 'v': l_dict['cx']}]
-                    kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - t_r) > 1e-6] + \
-                                      [{'t': t_r, 'v': l_dict['cy']}]
-                    kf_state['cx'].sort(key=lambda k: k['t'])
-                    kf_state['cy'].sort(key=lambda k: k['t'])
-                    st.session_state[kf_state_key] = kf_state
+                kf_state_key = f"kf_layer_{li}"
+                if kf_state_key not in st.session_state:
+                    st.session_state[kf_state_key] = {'cx': [], 'cy': []}
+                kf_state = st.session_state[kf_state_key]
 
-            _kf_times = sorted(set([k['t'] for k in kf_state['cx']] + [k['t'] for k in kf_state['cy']]))
-            if _kf_times:
-                _to_del_t = None
-                for tt in _kf_times:
-                    xv = next((k['v'] for k in kf_state['cx'] if abs(k['t'] - tt) < 1e-6), None)
-                    yv = next((k['v'] for k in kf_state['cy'] if abs(k['t'] - tt) < 1e-6), None)
-                    r1, r2, r3 = st.columns([2, 3, 1])
-                    with r1: st.caption(f"t = **{tt:.1f}s**")
-                    with r2: st.caption(f"X {xv:.0f}% · Y {yv:.0f}%")
-                    with r3:
-                        if st.button("✕", key=f"lyr_kfdel_{li}_{tt}"):
-                            _to_del_t = tt
-                if _to_del_t is not None:
-                    kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - _to_del_t) > 1e-6]
-                    kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - _to_del_t) > 1e-6]
-                    st.session_state[kf_state_key] = kf_state
-                    st.rerun()
-            else:
-                st.caption("— Nessun keyframe: la posizione resta fissa a X/Y per tutta la durata.")
+                col_kt, col_kb = st.columns([3, 1])
+                with col_kt:
+                    kf_t_cur = st.slider("Secondo", 0.0, float(max(dur, 0.1)), 0.0, step=0.1, key=f"lyr_kft_{li}")
+                with col_kb:
+                    st.write("")
+                    if st.button("📍 Crea keyframe qui", key=f"lyr_kfadd_{li}"):
+                        t_r = round(float(kf_t_cur), 2)
+                        kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - t_r) > 1e-6] + \
+                                          [{'t': t_r, 'v': l_dict['cx']}]
+                        kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - t_r) > 1e-6] + \
+                                          [{'t': t_r, 'v': l_dict['cy']}]
+                        kf_state['cx'].sort(key=lambda k: k['t'])
+                        kf_state['cy'].sort(key=lambda k: k['t'])
+                        st.session_state[kf_state_key] = kf_state
 
-            l_dict['keyframes'] = kf_state
+                _kf_times = sorted(set([k['t'] for k in kf_state['cx']] + [k['t'] for k in kf_state['cy']]))
+                if _kf_times:
+                    _to_del_t = None
+                    for tt in _kf_times:
+                        xv = next((k['v'] for k in kf_state['cx'] if abs(k['t'] - tt) < 1e-6), None)
+                        yv = next((k['v'] for k in kf_state['cy'] if abs(k['t'] - tt) < 1e-6), None)
+                        r1, r2, r3 = st.columns([2, 3, 1])
+                        with r1: st.caption(f"t = **{tt:.1f}s**")
+                        with r2: st.caption(f"X {xv:.0f}% · Y {yv:.0f}%")
+                        with r3:
+                            if st.button("✕", key=f"lyr_kfdel_{li}_{tt}"):
+                                _to_del_t = tt
+                    if _to_del_t is not None:
+                        kf_state['cx'] = [k for k in kf_state['cx'] if abs(k['t'] - _to_del_t) > 1e-6]
+                        kf_state['cy'] = [k for k in kf_state['cy'] if abs(k['t'] - _to_del_t) > 1e-6]
+                        st.session_state[kf_state_key] = kf_state
+                        st.rerun()
+                else:
+                    st.caption("— Nessun keyframe: la posizione resta fissa a X/Y per tutta la durata.")
 
-            layers.append(l_dict)
+                l_dict['keyframes'] = kf_state
 
-    if _to_delete_layer is not None:
-        st.session_state.layer_ids.remove(_to_delete_layer)
-        st.rerun()
+                layers.append(l_dict)
+
+        if _to_delete_layer is not None:
+            st.session_state.layer_ids.remove(_to_delete_layer)
+            st.rerun()
 
     with layer_preview_slot:
         active_layers   = [l for l in layers if l.get('type') == 'png' and l.get('file') is not None]
