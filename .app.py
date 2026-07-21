@@ -2050,13 +2050,12 @@ with bottom_container:
     with preview_slot:
         st.caption("🔍 Anteprima")
 
-        if bg_source == "Video":
-            st.caption("🎬 Sfondo Video: si vede solo nel render finale, non nell'anteprima statica.")
-
         prev_choices = []
         prev_files   = {}
         if bg_source == "Foto Fissa" and bg_static_file:
             prev_choices.append("Sfondo (Foto Fissa)"); prev_files["Sfondo (Foto Fissa)"] = bg_static_file
+        if bg_source == "Video" and bg_video_file:
+            prev_choices.append("Sfondo (Video, 1° frame)"); prev_files["Sfondo (Video, 1° frame)"] = bg_video_file
         if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
         if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
         if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
@@ -2067,8 +2066,23 @@ with bottom_container:
             prev_sel = st.selectbox("Anteprima su", prev_choices,
                 label_visibility="collapsed", key="unified_prev_sel")
             pf = prev_files[prev_sel]
-            pf.seek(0)
-            prev_img_full = np.array(Image.open(pf).convert("RGB"))
+            if prev_sel == "Sfondo (Video, 1° frame)":
+                pf.seek(0)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(pf.name)[1]) as _tmpv:
+                    _tmpv.write(pf.read())
+                    _tmp_prev_path = _tmpv.name
+                _cap_prev = cv2.VideoCapture(_tmp_prev_path)
+                _ret_prev, _frame_bgr = _cap_prev.read()
+                _cap_prev.release()
+                if _ret_prev:
+                    prev_img_full = cv2.cvtColor(_frame_bgr, cv2.COLOR_BGR2RGB)
+                    st.caption("🎬 Primo fotogramma del video — nel render cambia nel tempo (con loop).")
+                else:
+                    st.caption("⚠️ Non riesco a leggere il video, controlla il formato.")
+                    prev_img_full = np.zeros((720, 1280, 3), dtype=np.uint8)
+            else:
+                pf.seek(0)
+                prev_img_full = np.array(Image.open(pf).convert("RGB"))
 
             _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
                          "9:16 (Verticale)":  (720, 1280),
