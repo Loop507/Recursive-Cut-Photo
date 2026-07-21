@@ -23,8 +23,8 @@ if 'preset'       not in st.session_state: st.session_state.preset       = None
 if 'frame_export' not in st.session_state: st.session_state.frame_export = None
 if 'stripe_ids'   not in st.session_state: st.session_state.stripe_ids   = [0]
 if 'stripe_next_id' not in st.session_state: st.session_state.stripe_next_id = 1
-if 'layer_ids'     not in st.session_state: st.session_state.layer_ids     = []
-if 'layer_next_id' not in st.session_state: st.session_state.layer_next_id = 0
+if 'overlay_ids'     not in st.session_state: st.session_state.overlay_ids     = []
+if 'overlay_next_id' not in st.session_state: st.session_state.overlay_next_id = 0
 
 # --- PRESET GENERE ---
 GENRE_PRESETS = {
@@ -293,14 +293,6 @@ def blend_patch(base, top, mode, opacity):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-def prepare_layer_asset(uploaded_file):
-    """Carica un'immagine livello (PNG con alpha, o JPG/JPEG) e la ritorna come RGBA numpy
-    alla risoluzione nativa. Se il formato non ha canale alpha (es. JPG), viene aggiunto
-    automaticamente opaco al 100%."""
-    uploaded_file.seek(0)
-    return np.array(Image.open(uploaded_file).convert("RGBA"))
-
-
 def cover_crop(img_rgba, target_w, target_h):
     """Ritaglia (center-crop) l'immagine per adattarla all'aspect ratio del canvas —
     stessa logica di resize_to_format usata dal Calderone: riempie tutto il formato,
@@ -373,44 +365,46 @@ def blend_layer(base, top_rgb, alpha, mode):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-def apply_layers(frame, layers, beat_phase_val, canvas_h, canvas_w, t=0.0, total_dur=10.0):
+def get_video_overlay_frame(cap, t):
     """
-    Compone tutti i livelli attivi sopra 'frame', in ordine (1 sotto ... N in cima).
-    Ogni livello puo' essere un PNG caricato oppure il Calderone stesso ('type'='calderone'):
-    in questo caso si usa lo snapshot del frame corrente (gia' generato con le sue impostazioni
-    normali) come contenuto del livello, cosi' da poterlo impilare/blendare con altri livelli.
-    Se 'beat_react' e' attivo, il livello pulsa in continuazione (opacita' e scala) a
-    tempo di BPM: un'onda sinusoidale continua sulla fase del beat, non un keyframe
-    manuale. La posizione (cx, cy) invece PUO' essere animata a keyframe (kf_get),
-    indipendentemente dalla pulsazione.
+    Estrae un frame RGB dal VideoCapture 'cap' al tempo t (con loop se il video è
+    più corto della durata del render). Nessun effetto/glitch: solo il fotogramma
+    così com'è, che verrà poi posizionato/scalato come un overlay foto.
     """
-    if not layers:
+    fps_v = cap.get(cv2.CAP_PROP_FPS) or 24.0
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if n_frames <= 0:
+        return None
+    dur_v = n_frames / fps_v
+    t_loop = t % dur_v if dur_v > 0 else 0.0
+    frame_idx = min(int(t_loop * fps_v), n_frames - 1)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame_bgr = cap.read()
+    if not ret:
+        return None
+    return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+
+def load_overlay_image(uploaded_file):
+    """Carica una foto overlay (PNG con alpha, o JPG/JPEG) come RGBA numpy."""
+    uploaded_file.seek(0)
+    return np.array(Image.open(uploaded_file).convert("RGBA"))
+
+
+def apply_media_overlays(frame, overlays, canvas_h, canvas_w):
+    """
+    Compone foto/video overlay sopra 'frame', in ordine (1 sotto ... N in cima).
+    Nessun blend mode, nessuna pulsazione: solo posizione (cx, cy) e scala — come
+    i controlli x/y/dimensione già usati per le strisce. Ogni overlay è un dict con
+    'rgba' (frame RGBA già pronto per QUESTO istante — foto statica o frame video
+    già estratto), 'scale', 'cx', 'cy'.
+    """
+    if not overlays:
         return frame
-    calderone_rgb = frame  # snapshot del Calderone/Master di QUESTO frame, prima di ogni livello
-    puls = 0.5 * (1.0 + np.sin(2.0 * np.pi * beat_phase_val))  # 0..1, un ciclo per beat
     out = frame
-    for lyr in layers:
-        opacity = lyr['base_opacity'] * (1.0 - lyr['pulse_opacity'] + lyr['pulse_opacity'] * puls)
-        scale   = lyr['base_scale']   * (1.0 - lyr['pulse_scale']   + lyr['pulse_scale']   * puls)
-        cx = kf_get(lyr, 'cx', t, total_dur, lyr['cx'])
-        cy = kf_get(lyr, 'cy', t, total_dur, lyr['cy'])
-
-        is_calderone = (lyr.get('type') == 'calderone')
-        # scorciatoia veloce: Calderone senza riposizionamento/scala (il caso più comune) —
-        # blend diretto sull'intero frame, senza passare per dstack/resize/canvas vuoto.
-        if is_calderone and abs(scale - 1.0) < 1e-6 and abs(cx - 50.0) < 1e-6 and abs(cy - 50.0) < 1e-6:
-            out = blend_patch(out, calderone_rgb, lyr['blend_mode'], opacity)
-            continue
-
-        if is_calderone:
-            alpha_full = np.full(calderone_rgb.shape[:2] + (1,), 255, dtype=np.uint8)
-            src_rgba = np.dstack([calderone_rgb, alpha_full])
-        elif lyr.get('fit_mode') == 'cover':
-            src_rgba = cover_crop(lyr['rgba'], canvas_w, canvas_h)
-        else:
-            src_rgba = lyr['rgba']
-        rgb_c, alpha_c = place_layer_on_canvas(src_rgba, canvas_h, canvas_w, scale, cx, cy)
-        out = blend_layer(out, rgb_c, alpha_c * opacity, lyr['blend_mode'])
+    for ov in overlays:
+        rgb_c, alpha_c = place_layer_on_canvas(ov['rgba'], canvas_h, canvas_w, ov['scale'], ov['cx'], ov['cy'])
+        out = blend_layer(out, rgb_c, alpha_c, "Normal")
     return out
 
 
@@ -611,39 +605,6 @@ def resolve_reactive_opacity(s_dict, base_opacity, beat_gate_val, beat_sync_on, 
     if beat_sync_on and s_dict.get('beat_react', False) and not s_dict.get(auto_key, False):
         return base_opacity if beat_gate_val > 0.5 else 0.0
     return base_opacity
-
-
-def make_simple_calderone_frame(pool_imgs, hold_sec, trans_sec, seq_mode, t, h, w):
-    """
-    Genera un frame 'leggero' per un Calderone extra: NESSUN glitch/slicing, solo una
-    foto del pool tenuta ferma per hold_sec e poi dissolta verso la successiva in
-    trans_sec — l'effetto visivo lo dà la forma della striscia che lo contiene, non
-    il Calderone stesso. pool_imgs deve già essere ridimensionato a (h, w).
-    """
-    if not pool_imgs:
-        return np.zeros((h, w, 3), dtype=np.uint8)
-    n = len(pool_imgs)
-    if n == 1:
-        return pool_imgs[0]
-
-    cycle = max(hold_sec + trans_sec, 0.1)
-    cycle_idx = int(t // cycle)
-    t_in_cycle = t - cycle_idx * cycle
-
-    if seq_mode:
-        idx_cur  = cycle_idx % n
-        idx_next = (cycle_idx + 1) % n
-    else:
-        idx_cur  = random.Random(cycle_idx).randrange(n)
-        idx_next = random.Random(cycle_idx + 1).randrange(n)
-
-    img_cur = pool_imgs[idx_cur]
-    if t_in_cycle < hold_sec or trans_sec <= 0:
-        return img_cur
-
-    img_next = pool_imgs[idx_next]
-    alpha = np.clip((t_in_cycle - hold_sec) / trans_sec, 0.0, 1.0)
-    return (img_cur.astype(np.float32) * (1 - alpha) + img_next.astype(np.float32) * alpha).astype(np.uint8)
 
 
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
@@ -961,7 +922,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     global_chroma=False, global_chroma_amt=6,
                     global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
                     manual_bpm=None, onset_sensitivity=None,
-                    layers=None, extra_calderoni_cfg=None, foto_fisse_files=None):
+                    calderone2_cfg=None,
+                    overlays_cfg=None):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -982,56 +944,63 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     h, w = pool_imgs[0].shape[:2]
 
-    # --- CALDERONI EXTRA (leggeri, no glitch: solo foto + dissolvenza) e FOTO FISSE ---
-    # entrambi selezionabili come 'source' per singola striscia, in alternativa al Calderone.
-    extra_calderoni_pools = []  # lista di dict: {label, pool, hold_sec, trans_sec}
-    if extra_calderoni_cfg:
-        for _idx_ec, _ecfg in enumerate(extra_calderoni_cfg, start=2):
-            _ec_files = _ecfg.get('files') or []
-            if _ec_files:
-                extra_calderoni_pools.append({
-                    'label':     f"Calderone {_idx_ec}",
-                    'pool':      [load_img_half(f) for f in _ec_files],
-                    'hold_sec':  _ecfg.get('hold_sec', 2.0),
-                    'trans_sec': _ecfg.get('trans_sec', 0.5),
-                })
+    # --- CALDERONE 2 (opzionale): stesso trattamento glitch del Calderone 1, si mescolano
+    # gradualmente in base al progresso — stesso meccanismo di dissolvenza di Master 1/2.
+    pool_imgs2 = []
+    calderone2_mix_from = 0.5
+    if calderone2_cfg:
+        _c2_files = calderone2_cfg.get('files') or []
+        if _c2_files:
+            pool_imgs2 = [load_img_half(f) for f in _c2_files]
+            calderone2_mix_from = calderone2_cfg.get('mix_from', 0.5)
 
-    foto_fisse_imgs = {}  # {'Foto Fissa 1': frame_rgb, ...}
-    if foto_fisse_files:
-        for _ffi, _fff in enumerate(foto_fisse_files):
-            foto_fisse_imgs[f"Foto Fissa {_ffi+1}"] = load_img_half(_fff)
+    def pick_calderone_pool(prog):
+        """Se il Calderone 2 è configurato, sfuma gradualmente dal pool 1 al pool 2
+        dopo 'calderone2_mix_from' (stesso meccanismo di dissolvenza di Master1/2).
+        Altrimenti resta sempre sul pool 1 — comportamento originale invariato."""
+        if not pool_imgs2:
+            return pool_imgs
+        if prog < calderone2_mix_from:
+            return pool_imgs
+        span = max(1.0 - calderone2_mix_from, 1e-6)
+        ramp = np.clip((prog - calderone2_mix_from) / span, 0.0, 1.0)
+        return pool_imgs2 if random.random() < ramp else pool_imgs
 
-    def build_extra_sources(cur_t):
-        """Costruisce il dict {nome_sorgente: frame} per le strisce che pescano da
-        Calderoni extra o Foto Fisse, al tempo cur_t. Le Foto Fisse sono statiche
-        (nessun calcolo), i Calderoni extra pulsano con hold+dissolvenza leggera."""
-        _es = dict(foto_fisse_imgs)
-        for _ecp in extra_calderoni_pools:
-            _es[_ecp['label']] = make_simple_calderone_frame(
-                _ecp['pool'], _ecp['hold_sec'], _ecp['trans_sec'], seq_mode, cur_t, h, w)
-        return _es
+    # --- OVERLAY FOTO/VIDEO: solo posizione e dimensione, nessun effetto/blend/pulsazione ---
+    overlays_prepared = []  # {kind:'image'|'video', rgba (image) o cap (video), cx, cy, scale}
+    if overlays_cfg:
+        for _ov in overlays_cfg:
+            _ovf = _ov.get('file')
+            if _ovf is None:
+                continue
+            _name = _ovf.name.lower()
+            if _name.endswith(('.mp4', '.mov', '.avi', '.mkv')):
+                _ovf.seek(0)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(_name)[1]) as _tmpv:
+                    _tmpv.write(_ovf.read())
+                    _tmp_path = _tmpv.name
+                _cap = cv2.VideoCapture(_tmp_path)
+                overlays_prepared.append({'kind': 'video', 'cap': _cap,
+                                           'cx': _ov['cx'], 'cy': _ov['cy'], 'scale': _ov['scale']})
+            else:
+                overlays_prepared.append({'kind': 'image', 'rgba': load_overlay_image(_ovf),
+                                           'cx': _ov['cx'], 'cy': _ov['cy'], 'scale': _ov['scale']})
 
-    # --- LIVELLI (stile Photoshop): PNG con alpha o il Calderone stesso, pulsano a tempo di BPM ---
-    layers_prepared = []
-    if layers:
-        for lyr in layers:
-            is_calderone = (lyr.get('type') == 'calderone')
-            if is_calderone or lyr.get('file') is not None:
-                entry = {
-                    'type':          'calderone' if is_calderone else 'png',
-                    'fit_mode':      lyr.get('fit_mode', 'cover'),
-                    'blend_mode':    lyr.get('blend_mode', 'Normal'),
-                    'base_opacity':  lyr.get('base_opacity', 0.8),
-                    'pulse_opacity': lyr.get('pulse_opacity', 0.4),
-                    'base_scale':    lyr.get('base_scale', 1.0),
-                    'pulse_scale':   lyr.get('pulse_scale', 0.1),
-                    'cx':            lyr.get('cx', 50.0),
-                    'cy':            lyr.get('cy', 50.0),
-                    'keyframes':     lyr.get('keyframes', {}),
-                }
-                if not is_calderone:
-                    entry['rgba'] = prepare_layer_asset(lyr['file'])
-                layers_prepared.append(entry)
+    def build_overlay_frame_list(cur_t):
+        """Per ogni overlay ottiene l'rgba corrente: statico per le foto, estratto dal
+        video (con loop) per i video — nessun effetto, solo il fotogramma così com'è."""
+        out_list = []
+        for ovp in overlays_prepared:
+            if ovp['kind'] == 'video':
+                frame_rgb = get_video_overlay_frame(ovp['cap'], cur_t)
+                if frame_rgb is None:
+                    continue
+                alpha_full = np.full(frame_rgb.shape[:2] + (1,), 255, dtype=np.uint8)
+                rgba = np.dstack([frame_rgb, alpha_full])
+            else:
+                rgba = ovp['rgba']
+            out_list.append({'rgba': rgba, 'scale': ovp['scale'], 'cx': ovp['cx'], 'cy': ovp['cy']})
+        return out_list
 
     img_m1_half = load_img_half(up_m1) if up_m1 else None
     img_m2_half = load_img_half(up_m2) if up_m2 else None
@@ -1164,15 +1133,17 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     pv = min(int(100 * (1 - c_n) + 5), 100)
     ev = int(75 * (1 - c_n) + 2)
 
-    # --- finalizzazione frame: livelli PNG sopra il Calderone, poi resize export ---
+    # --- finalizzazione frame: overlay foto/video sopra lo sfondo, poi resize export ---
     def _finalize(raw_frame, f, t):
-        if layers_prepared:
+        if overlays_prepared:
             # canvas = dimensioni REALI del frame corrente, non h/w fissi: img_m1/img_m2
             # sono a piena risoluzione (out_w x out_h), mentre il resto della pipeline
             # (pick(), stripe, glitch) lavora a mezza risoluzione (h x w) — usare h/w fissi
             # qui avrebbe causato un mismatch di shape (crash) sui frame Master 1/2.
             ch, cw = raw_frame.shape[:2]
-            raw_frame = apply_layers(raw_frame, layers_prepared, float(beat_phase[f]), ch, cw, t, max_limit)
+            ov_list = build_overlay_frame_list(t)
+            if ov_list:
+                raw_frame = apply_media_overlays(raw_frame, ov_list, ch, cw)
         return cv2.resize(raw_frame, (out_w, out_h))
 
     # =========================================================
@@ -1216,8 +1187,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
                                                     stripe_chroma, stripe_flash, _bval, _bgate,
-                                                    t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
-                                                    extra_sources=build_extra_sources(t))
+                                                    t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                 else:
                     out_frame = img_cur
                 return _finalize(out_frame, f, t)
@@ -1240,8 +1210,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
-                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
-                                                        extra_sources=build_extra_sources(t))
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                     else:
                         out_frame = glitched
                 else:
@@ -1253,8 +1222,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
-                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
-                                                        extra_sources=build_extra_sources(t))
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
                     else:
                         out_frame = glitched
 
@@ -1287,8 +1255,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         if random.random() < _m1_prob:
                             res = img_m1_half
                         else:
-                            idx = (key % len(pool_imgs)) if seq_mode else None
-                            res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
+                            _active_pool = pick_calderone_pool(prog)
+                            idx = (key % len(_active_pool)) if seq_mode else None
+                            res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
                         cache_set(key, res)
                         return res
                 elif prog >= m2_start:
@@ -1304,8 +1273,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         if random.random() < _m2_prob:
                             res = img_m2_half
                         else:
-                            idx = (key % len(pool_imgs)) if seq_mode else None
-                            res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
+                            _active_pool = pick_calderone_pool(prog)
+                            idx = (key % len(_active_pool)) if seq_mode else None
+                            res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
                         cache_set(key, res)
                         return res
                 else:
@@ -1315,8 +1285,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
                         if key in cached_picks and not force and random.random() > 0.1:
                             return cached_picks[key]
-                        idx = (key % len(pool_imgs)) if seq_mode else None
-                        res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
+                        _active_pool = pick_calderone_pool(prog)
+                        idx = (key % len(_active_pool)) if seq_mode else None
+                        res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
                         cache_set(key, res)
                         return res
             else:
@@ -1330,8 +1301,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
                     if key in cached_picks and not force and random.random() > 0.1:
                         return cached_picks[key]
-                    idx = (key % len(pool_imgs)) if seq_mode else None
-                    res = pool_imgs[idx] if seq_mode else random.choice(pool_imgs)
+                    _active_pool = pick_calderone_pool(prog)
+                    idx = (key % len(_active_pool)) if seq_mode else None
+                    res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
                     cache_set(key, res)
                     return res
 
@@ -1387,8 +1359,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
-                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
-                                            extra_sources=build_extra_sources(t)),
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None)),
                         f, t)
                 return _finalize(pick(), f, t)
 
@@ -1440,8 +1411,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval, _bgate,
-                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
-                                            extra_sources=build_extra_sources(t))
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
 
             # --- Effetti globali standalone (senza strisce selettive) ---
             if not stripe_mode:
@@ -1585,62 +1555,31 @@ with c1:
     up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
     st.divider()
 
-    calderoni_extra_on = st.toggle("🖇️ Calderoni extra (per il collage nelle strisce)", value=False,
-        key="calderoni_extra_on",
-        help="Pool di foto aggiuntivi, SENZA glitch — solo foto ferma + dissolvenza. "
-             "L'effetto visivo lo dà la forma della striscia che li contiene (tonda, lancetta...), "
-             "non il Calderone extra stesso. Selezionabili come sorgente per singola striscia.")
-    extra_calderoni_cfg = []  # lista di dict: {pool_files, hold_sec, trans_sec} anche vuoti
-    if calderoni_extra_on:
-        for _eci in range(2, 5):  # Calderone 2, 3, 4
-            st.caption(f"Calderone {_eci}")
-            _ef = st.file_uploader(f"Foto — Calderone {_eci}", type=["jpg","png","jpeg"],
-                accept_multiple_files=True, key=f"extra_calderone_files_{_eci}",
-                label_visibility="collapsed")
-            _cec1, _cec2 = st.columns(2)
-            with _cec1:
-                _hold = st.slider("Tieni ferma (sec)", 0.2, 10.0, 2.0, step=0.1, key=f"extra_calderone_hold_{_eci}")
-            with _cec2:
-                _trans = st.slider("Dissolvenza (sec)", 0.0, 5.0, 0.5, step=0.1, key=f"extra_calderone_trans_{_eci}")
-            extra_calderoni_cfg.append({'files': _ef, 'hold_sec': _hold, 'trans_sec': _trans})
-        st.divider()
-
-    foto_fisse_on = st.toggle("🌫️ Foto Fisse (per il collage nelle strisce)", value=False,
-        key="foto_fisse_on",
-        help="Fino a 6 foto statiche selezionabili come sorgente per singola striscia, "
-             "in alternativa al Calderone.")
-    foto_fisse_files = []
-    if foto_fisse_on:
-        foto_fisse_files = st.file_uploader("Foto fisse (fino a 6)", type=["jpg","png","jpeg"],
-            accept_multiple_files=True, key="foto_fisse_files", label_visibility="collapsed") or []
-        if len(foto_fisse_files) > 6:
-            st.caption("⚠️ Solo le prime 6 verranno usate.")
-            foto_fisse_files = foto_fisse_files[:6]
+    calderone2_on = st.toggle("🖇️ Calderone 2", value=False, key="calderone2_on",
+        help="Un secondo pool di foto, con lo STESSO trattamento glitch del Calderone principale "
+             "(stesse impostazioni di Chaos/Speed/Geometria). Si mescola gradualmente col Calderone 1 "
+             "dal punto che imposti sotto — stesso meccanismo di dissolvenza di Master 1/2.")
+    calderone2_cfg = {'files': None, 'mix_from': 0.5}
+    if calderone2_on:
+        calderone2_cfg['files'] = st.file_uploader("Foto — Calderone 2", type=["jpg","png","jpeg"],
+            accept_multiple_files=True, key="calderone2_files")
+        calderone2_cfg['mix_from'] = st.slider("Calderone 2 subentra da (%)", 0, 100, 50,
+            key="calderone2_mix_from",
+            help="Prima di questo punto si vede solo il Calderone 1. Dopo, la probabilità di "
+                 "pescare dal Calderone 2 cresce gradualmente fino al 100%.") / 100.0
         st.divider()
 
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
 
     st.divider()
-    stripe_preview_slot = st.container()
-    layer_preview_slot = st.container()
+    preview_slot = st.container()
 
 with bottom_container:
     # ---- STRISCE SELETTIVE ----
     dur = st.session_state.get("dur_input", 10)                          # prima di c3
     fmt_value = st.session_state.get("format_select", "16:9 (Orizzontale)")  # prima di c3
 
-    # la sezione Livelli gira dopo quella delle Strisce, ma per decidere quale anteprima
-    # mostrare (vedi più sotto) mi serve saperlo PRIMA — leggo lo stato già salvato dei
-    # widget dei livelli (se esistono da un run precedente).
-    _any_active_layer = False
-    if st.session_state.get("layers_panel_on", False):
-        for _li_chk in st.session_state.get('layer_ids', []):
-            _src_chk  = st.session_state.get(f"lyr_src_{_li_chk}")
-            _file_chk = st.session_state.get(f"lyr_file_{_li_chk}")
-            if _src_chk == "🌀 Calderone" or _file_chk is not None:
-                _any_active_layer = True
-                break
-    layers = []
+    overlays_cfg = []
 
     col_s, col_l = st.columns(2)
     with col_s:
@@ -1734,18 +1673,6 @@ with bottom_container:
                         'blend_mode':    'Normal',
                         'opacity':       1.0,
                     }
-
-                    _src_opts = ["Calderone"]
-                    for _eci_idx, _ecfg in enumerate(extra_calderoni_cfg, start=2):
-                        if _ecfg['files']:
-                            _src_opts.append(f"Calderone {_eci_idx}")
-                    for _ffi in range(len(foto_fisse_files)):
-                        _src_opts.append(f"Foto Fissa {_ffi+1}")
-                    if len(_src_opts) > 1:
-                        s_dict['source'] = st.selectbox("🖇️ Sorgente", _src_opts, key=f"ssrc_{i}",
-                            help="Da dove pesca questa striscia. 'Calderone' = il comportamento normale.")
-                    else:
-                        s_dict['source'] = "Calderone"
 
                     st.divider()
 
@@ -1913,44 +1840,6 @@ with bottom_container:
 
             st.divider()
 
-            # --- ANTEPRIMA (renderizzata a sinistra, sotto "Carica audio") ---
-            prev_choices = []
-            prev_files   = {}
-            if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
-            if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
-            if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
-
-            with stripe_preview_slot:
-             if not _any_active_layer:
-                st.caption("🔍 Anteprima strisce")
-                if prev_choices:
-                    prev_sel = st.selectbox("Anteprima su", prev_choices, label_visibility="collapsed")
-                    pf = prev_files[prev_sel]
-                    pf.seek(0)
-                    prev_img_full = np.array(Image.open(pf).convert("RGB"))
-
-                    _fmt_dims_sp = {"16:9 (Orizzontale)": (1280, 720),
-                                    "9:16 (Verticale)":  (720, 1280),
-                                    "1:1 (Quadrato)":    (1080, 1080)}
-                    _fw_sp, _fh_sp = _fmt_dims_sp.get(fmt_value, (1280, 720))
-                    st.caption(f"Formato: {fmt_value}")
-                    prev_img_cropped = cover_crop(prev_img_full, _fw_sp, _fh_sp)  # come farà il render
-
-                    ph, pw     = prev_img_cropped.shape[:2]
-                    scale      = 220 / max(ph, pw)
-                    dw, dh     = int(pw * scale), int(ph * scale)
-                    overlay    = cv2.resize(prev_img_cropped, (dw, dh)).copy()
-
-                    draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw)
-
-                    caption = "Anteprima — viola = striscia attiva (lunghezza e centro come impostati)"
-                    if stripe_reverse:
-                        caption += " · REVERSE ON"
-                    st.image(overlay, caption=caption, use_container_width=True)
-                else:
-                    st.caption("Carica almeno una foto per vedere l'anteprima.")
-                st.divider()
-
             # --- EFFETTI GLOBALI STRISCIA ---
             col_fx1, col_fx2 = st.columns(2)
             with col_fx1:
@@ -2053,153 +1942,107 @@ with bottom_container:
             stripe_flash  = False
 
     with col_l:
-        layers_panel_on = st.toggle("🖼️ Livelli (PNG o Calderone impilati, stile Photoshop)", value=False,
-            key="layers_panel_on",
-            help="Foto (PNG) o il Calderone stesso, impilati stile Photoshop. Opacità e scala pulsano "
-                 "in continuazione a tempo del BPM (attivabile/disattivabile per livello). "
-                 "La posizione X/Y può anche essere animata con keyframe.")
+        overlay_panel_on = st.toggle("🎬 Overlay Foto/Video", value=False,
+            key="overlay_panel_on",
+            help="Foto o video posizionabili liberamente sullo sfondo — solo posizione e "
+                 "dimensione (come i comandi X/Y delle strisce), nessun effetto/blend/pulsazione. "
+                 "Se è un video più corto della durata del render, va in loop.")
 
+        if 'overlay_ids' not in st.session_state: st.session_state.overlay_ids = []
+        if 'overlay_next_id' not in st.session_state: st.session_state.overlay_next_id = 0
 
-        if layers_panel_on:
-            col_laddd, col_lninfo = st.columns([1, 2])
-            with col_laddd:
-                if st.button("➕ Aggiungi livello", key="add_layer"):
-                    st.session_state.layer_ids.append(st.session_state.layer_next_id)
-                    st.session_state.layer_next_id += 1
-            with col_lninfo:
-                st.caption(f"{len(st.session_state.layer_ids)} livello/i attivi")
+        if overlay_panel_on:
+            col_oadd, col_oinfo = st.columns([1, 2])
+            with col_oadd:
+                if st.button("➕ Aggiungi overlay", key="add_overlay"):
+                    st.session_state.overlay_ids.append(st.session_state.overlay_next_id)
+                    st.session_state.overlay_next_id += 1
+            with col_oinfo:
+                st.caption(f"{len(st.session_state.overlay_ids)} overlay attivi")
 
-            _to_delete_layer = None
+            _to_delete_overlay = None
 
-            for _lidx, li in enumerate(list(st.session_state.layer_ids)):
-                if _to_delete_layer == li:
+            for _oidx, oi in enumerate(list(st.session_state.overlay_ids)):
+                if _to_delete_overlay == oi:
                     continue
 
-                with st.expander(f"Livello {_lidx+1}", expanded=(_lidx == 0), key=f"exp_layer_{li}"):
-                    if st.button(f"🗑️ Elimina livello {_lidx+1}", key=f"del_layer_{li}"):
-                        _to_delete_layer = li
+                with st.expander(f"Overlay {_oidx+1}", expanded=(_oidx == 0), key=f"exp_overlay_{oi}"):
+                    if st.button(f"🗑️ Elimina overlay {_oidx+1}", key=f"del_overlay_{oi}"):
+                        _to_delete_overlay = oi
                         continue
 
-                    l_source = st.radio("Sorgente livello", ["📁 Foto (PNG)", "🌀 Calderone"],
-                        horizontal=True, key=f"lyr_src_{li}",
-                        help="Calderone: usa l'output del Calderone (con le sue impostazioni normali) "
-                             "come contenuto di questo livello — così puoi impilarlo, dargli un blend "
-                             "mode/opacità/posizione propri, insieme ad altre foto sopra o sotto.")
+                    o_file = st.file_uploader("Foto o video",
+                        type=["png", "jpg", "jpeg", "mp4", "mov", "avi", "mkv"], key=f"ov_file_{oi}")
 
-                    if l_source == "📁 Foto (PNG)":
-                        l_file = st.file_uploader("Immagine (PNG con trasparenza, o JPG/JPEG)",
-                            type=["png", "jpg", "jpeg"], key=f"lyr_file_{li}",
-                            help="PNG con alpha: le zone trasparenti restano trasparenti. "
-                                 "JPG/JPEG: nessuna trasparenza propria, la foto riempie il livello per intero "
-                                 "(l'opacità/pulsazione del livello funziona comunque).")
-                        l_fit = st.radio("Adattamento al formato", 
-                            ["🔲 Riempi (ritaglia, come il Calderone)", "🖼️ Contieni (mostra tutta l'immagine)"],
-                            horizontal=True, key=f"lyr_fit_{li}",
-                            help="Riempi: ritaglia i bordi in eccesso per coprire tutto il fotogramma, "
-                                 "senza barre vuote — stesso comportamento del Calderone. "
-                                 "Contieni: mostra l'immagine intera, può lasciare bordi trasparenti "
-                                 "se le proporzioni non coincidono con il formato video (utile per loghi/PNG con trasparenza).")
-                        l_dict = {'file': l_file, 'type': 'png',
-                                  'fit_mode': 'cover' if l_fit.startswith("🔲") else 'contain'}
+                    col_ox, col_oy, col_oz = st.columns(3)
+                    with col_ox:
+                        o_cx = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"ov_cx_{oi}",
+                            help="50 = centrato. Sotto 0 o sopra 100 esce dal fotogramma."))
+                    with col_oy:
+                        o_cy = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"ov_cy_{oi}"))
+                    with col_oz:
+                        o_scale = st.slider("Dimensione", 0.05, 2.0, 0.4, step=0.05, key=f"ov_sc_{oi}",
+                            help="1.0 = riempie il fotogramma (contain-fit).")
+
+                    overlays_cfg.append({'file': o_file, 'cx': o_cx, 'cy': o_cy, 'scale': o_scale})
+
+            if _to_delete_overlay is not None:
+                st.session_state.overlay_ids.remove(_to_delete_overlay)
+                st.rerun()
+
+    with preview_slot:
+        st.caption("🔍 Anteprima")
+        prev_choices = []
+        prev_files   = {}
+        if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
+        if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
+        if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
+
+        if not prev_choices:
+            st.caption("Carica almeno una foto (Master o Calderone) per vedere l'anteprima.")
+        else:
+            prev_sel = st.selectbox("Anteprima su", prev_choices,
+                label_visibility="collapsed", key="unified_prev_sel")
+            pf = prev_files[prev_sel]
+            pf.seek(0)
+            prev_img_full = np.array(Image.open(pf).convert("RGB"))
+
+            _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
+                         "9:16 (Verticale)":  (720, 1280),
+                         "1:1 (Quadrato)":    (1080, 1080)}
+            _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
+            st.caption(f"Formato: {fmt_value}")
+            prev_img_cropped = cover_crop(prev_img_full, _fw, _fh)  # stesso ritaglio del render
+
+            ph, pw   = prev_img_cropped.shape[:2]
+            pscale   = 190 / max(ph, pw)  # anteprima compatta
+            pdw, pdh = int(pw * pscale), int(ph * pscale)
+            preview_out = cv2.resize(prev_img_cropped, (pdw, pdh)).copy()
+
+            _capt = "Anteprima"
+            if stripe_mode and stripes:
+                draw_stripe_preview_overlay(preview_out, stripes, stripe_orientation, pdh, pdw)
+                _capt += " · viola = striscia attiva"
+                if stripe_reverse:
+                    _capt += " · REVERSE ON"
+
+            if overlay_panel_on and overlays_cfg:
+                _ov_preview = []
+                for _ov in overlays_cfg:
+                    if _ov['file'] is None:
+                        continue
+                    _ov_name = _ov['file'].name.lower()
+                    if _ov_name.endswith(('.mp4', '.mov', '.avi', '.mkv')):
+                        # placeholder: un video richiede decodifica, qui mostro solo dove/quanto sarà grande
+                        _ph = np.full((200, 200, 4), [90, 90, 90, 210], dtype=np.uint8)
                     else:
-                        l_dict = {'file': None, 'type': 'calderone'}
-                        st.caption("Il Calderone gira sempre con le sue impostazioni normali — qui scegli "
-                                   "solo come inserirlo nella pila dei livelli.")
+                        _ph = load_overlay_image(_ov['file'])
+                    _ov_preview.append({'rgba': _ph, 'scale': _ov['scale'], 'cx': _ov['cx'], 'cy': _ov['cy']})
+                if _ov_preview:
+                    preview_out = apply_media_overlays(preview_out, _ov_preview, pdh, pdw)
+                    _capt += " · overlay posizionati"
 
-                    col_lb1, col_lb2 = st.columns(2)
-                    with col_lb1:
-                        l_dict['blend_mode'] = st.selectbox("Blend mode",
-                            ["Normal", "Screen", "Multiply", "Difference"], key=f"lyr_bm_{li}")
-                    with col_lb2:
-                        l_dict['base_scale'] = st.slider("Scala base", 0.1, 2.0, 1.0, step=0.05, key=f"lyr_sc_{li}",
-                            help="1.0 = il livello riempie il canvas (contain-fit) prima della pulsazione.")
-
-                    l_dict['base_opacity'] = st.slider("Opacità base", 0.0, 1.0, 0.8, step=0.05, key=f"lyr_op_{li}")
-
-                    l_dict['beat_react'] = st.toggle("🎵 Segui il beat", value=True, key=f"lyr_br_{li}",
-                        help="ON: il livello pulsa (opacità/scala) a tempo del BPM. OFF: resta fisso ai valori base.")
-
-                    if l_dict['beat_react']:
-                        col_lp1, col_lp2 = st.columns(2)
-                        with col_lp1:
-                            l_dict['pulse_opacity'] = st.slider("Pulsazione opacità", 0.0, 1.0, 0.4, step=0.05, key=f"lyr_po_{li}",
-                                help="0 = opacità fissa, 1 = pulsa da 0 all'opacità base a tempo di BPM.")
-                        with col_lp2:
-                            l_dict['pulse_scale'] = st.slider("Pulsazione scala", 0.0, 1.0, 0.15, step=0.05, key=f"lyr_ps_{li}",
-                                help="Quanto la scala 'respira' a tempo di BPM (0 = statica).")
-                    else:
-                        l_dict['pulse_opacity'] = 0.0
-                        l_dict['pulse_scale']   = 0.0
-
-                    col_lx, col_ly = st.columns(2)
-                    with col_lx:
-                        l_dict['cx'] = float(st.slider("Posizione X (%)", -100, 200, 50, key=f"lyr_cx_{li}",
-                            help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
-                    with col_ly:
-                        l_dict['cy'] = float(st.slider("Posizione Y (%)", -100, 200, 50, key=f"lyr_cy_{li}",
-                            help="50 = centrato. Sotto 0 o sopra 100 il livello esce dal fotogramma."))
-
-    with layer_preview_slot:
-        active_layers   = [l for l in layers if l.get('type') == 'png' and l.get('file') is not None]
-        calderone_layers = [l for l in layers if l.get('type') == 'calderone']
-        lp_choices = []
-        lp_files   = {}
-        if up_m1: lp_choices.append("Master 1");             lp_files["Master 1"] = up_m1
-        if up_m2: lp_choices.append("Master 2");             lp_files["Master 2"] = up_m2
-        if up_t:  lp_choices.append("Prima foto Calderone"); lp_files["Prima foto Calderone"] = up_t[0]
-
-        if active_layers or calderone_layers:
-            st.caption("🔍 Anteprima livelli")
-            if calderone_layers:
-                st.caption("🌀 Livello Calderone presente: si vede solo nel render, "
-                           "l'anteprima statica qui sotto mostra solo i livelli foto (+ strisce, se attive).")
-
-            if not lp_choices:
-                st.caption("Carica una foto (Master o Calderone) per vedere l'anteprima.")
-            else:
-                lprev_sel = st.selectbox("Anteprima su", lp_choices,
-                    label_visibility="collapsed", key="layer_prev_sel")
-                lpf = lp_files[lprev_sel]
-                lpf.seek(0)
-                lprev_img_full = np.array(Image.open(lpf).convert("RGB"))
-
-                _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
-                             "9:16 (Verticale)":  (720, 1280),
-                             "1:1 (Quadrato)":    (1080, 1080)}
-                _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
-                st.caption(f"Formato: {fmt_value}")
-                # stesso ritaglio "cover" che userà davvero il render, per mostrare il formato corretto
-                lprev_img = cover_crop(lprev_img_full, _fw, _fh)
-
-                lph, lpw  = lprev_img.shape[:2]
-                lscale    = 220 / max(lph, lpw)
-                ldw, ldh  = int(lpw * lscale), int(lph * lscale)
-                lprev_small = cv2.resize(lprev_img, (ldw, ldh))
-
-                preview_layers = [{
-                    'rgba':          prepare_layer_asset(l['file']),
-                    'fit_mode':      l.get('fit_mode', 'cover'),
-                    'blend_mode':    l['blend_mode'],
-                    'base_opacity':  l['base_opacity'],
-                    'pulse_opacity': 0.0,
-                    'base_scale':    l['base_scale'],
-                    'pulse_scale':   0.0,
-                    'cx':            l['cx'],
-                    'cy':            l['cy'],
-                } for l in active_layers]
-
-                preview_out = apply_layers(lprev_small, preview_layers, 0.0, ldh, ldw)
-
-                _capt = "Anteprima statica (opacità/scala base) — la pulsazione a BPM si vede solo nel render finale"
-                if stripe_mode and stripes:
-                    preview_out = preview_out.copy()
-                    draw_stripe_preview_overlay(preview_out, stripes, stripe_orientation, ldh, ldw)
-                    _capt += " · viola = striscia attiva"
-                    if stripe_reverse:
-                        _capt += " · REVERSE ON"
-
-                st.image(preview_out, caption=_capt, use_container_width=True)
-
+            st.image(preview_out, caption=_capt, use_container_width=True)
 
 with c2:
     st.subheader("✂️ Controllo")
@@ -2312,33 +2155,36 @@ with c3:
                     st.session_state["audio_preview_key"] = preview_key
             preview_result = st.session_state["audio_preview"]
 
-            if preview_result['detected_bpm'] > 0:
-                st.info(f"🎯 BPM {preview_result['bpm_source'].lower()}: **{preview_result['detected_bpm']:.1f}**")
-                st.caption("Ti sembra raddoppiato o dimezzato rispetto al vero tempo del brano? Correggilo qui:")
-                col_half, col_double = st.columns(2)
-                with col_half:
-                    if st.button("÷2 BPM", key="bpm_half_btn", use_container_width=True):
-                        new_bpm = int(round(preview_result['detected_bpm'] / 2.0))
-                        st.session_state["bpm_mode_radio"] = "Inserisci manualmente"
-                        st.session_state["manual_bpm_input"] = max(40, min(220, new_bpm))
-                        st.rerun()
-                with col_double:
-                    if st.button("×2 BPM", key="bpm_double_btn", use_container_width=True):
-                        new_bpm = int(round(preview_result['detected_bpm'] * 2.0))
-                        st.session_state["bpm_mode_radio"] = "Inserisci manualmente"
-                        st.session_state["manual_bpm_input"] = max(40, min(220, new_bpm))
-                        st.rerun()
+            show_audio_info = st.checkbox("📊 Mostra dettagli audio (BPM rilevato, grafico beat/onset)",
+                value=False, key="show_audio_info")
+            if show_audio_info:
+                if preview_result['detected_bpm'] > 0:
+                    st.info(f"🎯 BPM {preview_result['bpm_source'].lower()}: **{preview_result['detected_bpm']:.1f}**")
+                    st.caption("Ti sembra raddoppiato o dimezzato rispetto al vero tempo del brano? Correggilo qui:")
+                    col_half, col_double = st.columns(2)
+                    with col_half:
+                        if st.button("÷2 BPM", key="bpm_half_btn", use_container_width=True):
+                            new_bpm = int(round(preview_result['detected_bpm'] / 2.0))
+                            st.session_state["bpm_mode_radio"] = "Inserisci manualmente"
+                            st.session_state["manual_bpm_input"] = max(40, min(220, new_bpm))
+                            st.rerun()
+                    with col_double:
+                        if st.button("×2 BPM", key="bpm_double_btn", use_container_width=True):
+                            new_bpm = int(round(preview_result['detected_bpm'] * 2.0))
+                            st.session_state["bpm_mode_radio"] = "Inserisci manualmente"
+                            st.session_state["manual_bpm_input"] = max(40, min(220, new_bpm))
+                            st.rerun()
 
-            total_f_prev = len(preview_result['audio_envelope'])
-            n_points = min(400, total_f_prev)
-            idx = np.linspace(0, total_f_prev - 1, n_points).astype(int)
-            chart_df = pd.DataFrame({
-                "Volume": preview_result['audio_envelope'][idx],
-                "Beat":   preview_result['beat_envelope'][idx],
-                "Onset":  preview_result['onset_envelope'][idx],
-            })
-            st.caption("📊 Anteprima: volume, beat e onset rilevati lungo la durata")
-            st.line_chart(chart_df, height=180)
+                total_f_prev = len(preview_result['audio_envelope'])
+                n_points = min(400, total_f_prev)
+                idx = np.linspace(0, total_f_prev - 1, n_points).astype(int)
+                chart_df = pd.DataFrame({
+                    "Volume": preview_result['audio_envelope'][idx],
+                    "Beat":   preview_result['beat_envelope'][idx],
+                    "Onset":  preview_result['onset_envelope'][idx],
+                })
+                st.caption("📊 Anteprima: volume, beat e onset rilevati lungo la durata")
+                st.line_chart(chart_df, height=180)
         else:
             st.caption("Carica un audio per l'anteprima BPM e il grafico beat/onset.")
 
@@ -2360,8 +2206,8 @@ with c3:
             global_chroma, global_chroma_amt,
             global_flash, global_flash_threshold, global_flash_intensity,
             manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity,
-            layers=layers,
-            extra_calderoni_cfg=extra_calderoni_cfg, foto_fisse_files=foto_fisse_files
+            calderone2_cfg=calderone2_cfg,
+            overlays_cfg=overlays_cfg
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
