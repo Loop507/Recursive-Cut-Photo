@@ -923,6 +923,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
                     manual_bpm=None, onset_sensitivity=None,
                     calderone2_cfg=None,
+                    bg_source="Calderone (originale)", bg_static_file=None, bg_video_file=None,
                     overlays_cfg=None):
 
     fps = 24
@@ -965,6 +966,31 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         span = max(1.0 - calderone2_mix_from, 1e-6)
         ramp = np.clip((prog - calderone2_mix_from) / span, 0.0, 1.0)
         return pool_imgs2 if random.random() < ramp else pool_imgs
+
+    # --- SFONDO CUSTOM: Foto Fissa o Video, sostituisce Calderone/Master per tutta la durata ---
+    bg_static_frame = None
+    bg_video_cap = None
+    if bg_source == "Foto Fissa" and bg_static_file:
+        bg_static_frame = load_img_half(bg_static_file)
+    elif bg_source == "Video" and bg_video_file:
+        bg_video_file.seek(0)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(bg_video_file.name)[1]) as _tmpbg:
+            _tmpbg.write(bg_video_file.read())
+            _bg_tmp_path = _tmpbg.name
+        bg_video_cap = cv2.VideoCapture(_bg_tmp_path)
+
+    def get_custom_bg_frame(cur_t):
+        """Foto Fissa: sempre la stessa immagine. Video: fotogramma al tempo cur_t (loop se
+        più corto della durata). Nessun effetto/glitch — è lo sfondo così com'è."""
+        if bg_source == "Foto Fissa" and bg_static_frame is not None:
+            return bg_static_frame
+        if bg_source == "Video" and bg_video_cap is not None:
+            frame_rgb = get_video_overlay_frame(bg_video_cap, cur_t)
+            if frame_rgb is not None:
+                if frame_rgb.shape[:2] != (h, w):
+                    frame_rgb = cv2.resize(frame_rgb, (w, h))
+                return frame_rgb
+        return pool_imgs[0]  # fallback di sicurezza se il file non è valido
 
     # --- OVERLAY FOTO/VIDEO: solo posizione e dimensione, nessun effetto/blend/pulsazione ---
     overlays_prepared = []  # {kind:'image'|'video', rgba (image) o cap (video), cx, cy, scale}
@@ -1239,6 +1265,22 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             if f >= total_f: f = total_f - 1
             prog_bar.progress(f / total_f)
             prog = t / max_limit
+
+            if bg_source != "Calderone (originale)":
+                _bg_content = get_custom_bg_frame(t)
+                if stripe_mode and stripes:
+                    _aenv  = float(audio_envelope[f])
+                    _bval  = float(beat_envelope[f])
+                    _bgate = float(beat_gate[f])
+                    _soff  = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
+                    out_frame = apply_stripe_window(_bg_content, _bg_content, _bg_content, h, w,
+                                                    stripes, stripe_orientation, False, stripe_reverse,
+                                                    _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
+                                                    t=t, total_dur=max_limit,
+                                                    beat_sync_on=(beat_sync and up_aud is not None))
+                else:
+                    out_frame = _bg_content
+                return _finalize(out_frame, f, t)
 
             has_masters = (img_m1 is not None) and (img_m2 is not None)
 
@@ -1548,6 +1590,21 @@ c1, c2, c3 = st.columns([1, 1.2, 1])
 bottom_container = st.container()  # riga sotto: Strisce | Livelli affiancate
 with c1:
     st.subheader("🖼️ Assets")
+
+    bg_source = st.selectbox("🎨 Sfondo", ["Calderone (originale)", "Foto Fissa", "Video"],
+        key="bg_source",
+        help="Cosa genera lo sfondo del video. 'Calderone' = comportamento originale "
+             "(Transizione Master1/2 + Calderone, eventuale Calderone 2). 'Foto Fissa'/'Video' "
+             "sostituiscono tutto questo con un'unica immagine o un video in loop per tutta "
+             "la durata — Master1/2 e Calderone 2 in quel caso non si applicano.")
+    bg_static_file = None
+    bg_video_file  = None
+    if bg_source == "Foto Fissa":
+        bg_static_file = st.file_uploader("Foto sfondo", type=["jpg","png","jpeg"], key="bg_static_file")
+    elif bg_source == "Video":
+        bg_video_file = st.file_uploader("Video sfondo", type=["mp4","mov","avi","mkv"], key="bg_video_file")
+    st.divider()
+
     st.caption("🔀 Transizione (dissolvenza inizio/fine)")
     up_m1 = st.file_uploader("MASTER 1 — inizio", type=["jpg","png","jpeg"])
     up_m2 = st.file_uploader("MASTER 2 — fine",   type=["jpg","png","jpeg"])
@@ -1992,14 +2049,20 @@ with bottom_container:
 
     with preview_slot:
         st.caption("🔍 Anteprima")
+
+        if bg_source == "Video":
+            st.caption("🎬 Sfondo Video: si vede solo nel render finale, non nell'anteprima statica.")
+
         prev_choices = []
         prev_files   = {}
+        if bg_source == "Foto Fissa" and bg_static_file:
+            prev_choices.append("Sfondo (Foto Fissa)"); prev_files["Sfondo (Foto Fissa)"] = bg_static_file
         if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
         if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
         if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
 
         if not prev_choices:
-            st.caption("Carica almeno una foto (Master o Calderone) per vedere l'anteprima.")
+            st.caption("Carica almeno una foto (Master, Calderone o Sfondo) per vedere l'anteprima.")
         else:
             prev_sel = st.selectbox("Anteprima su", prev_choices,
                 label_visibility="collapsed", key="unified_prev_sel")
@@ -2207,6 +2270,7 @@ with c3:
             global_flash, global_flash_threshold, global_flash_intensity,
             manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity,
             calderone2_cfg=calderone2_cfg,
+            bg_source=bg_source, bg_static_file=bg_static_file, bg_video_file=bg_video_file,
             overlays_cfg=overlays_cfg
         )
         st.session_state.v_path  = v
