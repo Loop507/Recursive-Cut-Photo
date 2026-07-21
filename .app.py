@@ -1266,10 +1266,21 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             prog_bar.progress(f / total_f)
             prog = t / max_limit
 
-            # Sfondo custom (Foto Fissa/Video): calcolato qui se configurato, ma il Calderone
-            # continua comunque a girare normalmente sotto — così ogni striscia può scegliere
-            # se mostrare lo Sfondo o il Calderone (vedi 'source' nella config striscia).
-            _custom_bg = get_custom_bg_frame(t) if bg_source != "Calderone (originale)" else None
+            if bg_source != "Calderone (originale)":
+                _bg_content = get_custom_bg_frame(t)
+                if stripe_mode and stripes:
+                    _aenv  = float(audio_envelope[f])
+                    _bval  = float(beat_envelope[f])
+                    _bgate = float(beat_gate[f])
+                    _soff  = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
+                    out_frame = apply_stripe_window(_bg_content, _bg_content, _bg_content, h, w,
+                                                    stripes, stripe_orientation, False, stripe_reverse,
+                                                    _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
+                                                    t=t, total_dur=max_limit,
+                                                    beat_sync_on=(beat_sync and up_aud is not None))
+                else:
+                    out_frame = _bg_content
+                return _finalize(out_frame, f, t)
 
             has_masters = (img_m1 is not None) and (img_m2 is not None)
 
@@ -1381,24 +1392,18 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             if orientation == "Nessun Effetto":
                 if stripe_mode and stripes:
                     calder_clean = pick()
-                    if _custom_bg is not None:
-                        _bg = _custom_bg
-                        _extra_src = {'Sfondo': _custom_bg}
-                    elif stripe_use_render:
+                    if stripe_use_render:
                         # nessun glitch → frame pulito come sfondo
                         _bg = calder_clean
-                        _extra_src = None
                     else:
                         _bg = stripe_bg_static if stripe_bg_static is not None else pick()
-                        _extra_src = None
                     return _finalize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
-                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
-                                            extra_sources=_extra_src),
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None)),
                         f, t)
-                return _finalize(_custom_bg if _custom_bg is not None else pick(), f, t)
+                return _finalize(pick(), f, t)
 
             # --- Calderone corrente (foto pulita, per la striscia originale) ---
             calder_clean = pick()
@@ -1440,24 +1445,15 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
             # --- Stripe mode: componi sfondo + striscia ---
             if stripe_mode and stripes:
-                if _custom_bg is not None:
-                    _bg = _custom_bg
-                    _extra_src = {'Sfondo': _custom_bg}
-                elif stripe_use_render:
+                if stripe_use_render:
                     _bg = frame.copy()
-                    _extra_src = None
                 else:
                     _bg = stripe_bg_static if stripe_bg_static is not None else pick()
-                    _extra_src = None
                 frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval, _bgate,
-                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
-                                            extra_sources=_extra_src)
-            elif _custom_bg is not None:
-                # niente strisce ma sfondo custom impostato: il frame finale è lo sfondo, non il Calderone
-                frame = _custom_bg
+                                            t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
 
             # --- Effetti globali standalone (senza strisce selettive) ---
             if not stripe_mode:
@@ -1609,15 +1605,10 @@ with c1:
         bg_video_file = st.file_uploader("Video sfondo", type=["mp4","mov","avi","mkv"], key="bg_video_file")
     st.divider()
 
-    show_transizione = st.checkbox("🔀 Mostra Transizione Master 1 e Master 2 (dissolvenza inizio/fine)",
-        value=False, key="show_transizione")
-    up_m1 = None
-    up_m2 = None
-    if show_transizione:
-        st.caption("Transizione (dissolvenza inizio/fine)")
-        up_m1 = st.file_uploader("MASTER 1 — inizio", type=["jpg","png","jpeg"])
-        up_m2 = st.file_uploader("MASTER 2 — fine",   type=["jpg","png","jpeg"])
-        st.divider()
+    st.caption("🔀 Transizione (dissolvenza inizio/fine)")
+    up_m1 = st.file_uploader("MASTER 1 — inizio", type=["jpg","png","jpeg"])
+    up_m2 = st.file_uploader("MASTER 2 — fine",   type=["jpg","png","jpeg"])
+    st.divider()
     up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
     st.divider()
 
@@ -1636,7 +1627,9 @@ with c1:
         st.divider()
 
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
+
     st.divider()
+    preview_slot = st.container()
 
 with bottom_container:
     # ---- STRISCE SELETTIVE ----
@@ -1645,8 +1638,7 @@ with bottom_container:
 
     overlays_cfg = []
 
-    col_prev, col_s, col_l = st.columns([1, 1, 1])
-    preview_slot = col_prev.container()
+    col_s, col_l = st.columns(2)
     with col_s:
         stripe_mode = st.toggle("🎯 Strisce Selettive", value=False, key="stripe_mode_g",
             help="Sfondo + finestre che mostrano il Calderone in movimento.")
@@ -1663,9 +1655,14 @@ with bottom_container:
                 ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True, key="stripe_orientation_g",
                 help="Mix H+V: strisce pari=orizzontali, dispari=verticali")
 
-            # sfondo esterno alle strisce: fissato su "Calderone" (comportamento standard).
-            # La scelta Sfondo/Foto Fissa/Video è quella in Assets, non serve sceglierlo due volte qui.
-            stripe_bg = "Calderone"
+            # scelta sfondo
+            bg_opts = []
+            if up_m1: bg_opts.append("Master 1")
+            if up_m2: bg_opts.append("Master 2")
+            bg_opts.append("Calderone")
+            bg_opts.append("Render")
+            stripe_bg = st.radio("🖼️ Sfondo", bg_opts, horizontal=True, key="stripe_bg_g",
+                help="Master 1/2 = foto ferma. Calderone = foto in movimento. Render = glitch principale come sfondo, strisce sopra.")
 
             col_tog1, col_tog2 = st.columns(2)
             with col_tog1:
@@ -1733,12 +1730,6 @@ with bottom_container:
                         'blend_mode':    'Normal',
                         'opacity':       1.0,
                     }
-
-                    if bg_source != "Calderone (originale)":
-                        s_dict['source'] = st.radio("🖇️ Sorgente", ["Sfondo", "Calderone"],
-                            horizontal=True, key=f"ssrc_{i}",
-                            help="Cosa mostra questa striscia: lo Sfondo impostato (Foto Fissa/Video) "
-                                 "o il Calderone (che continua a girare in parallelo).")
 
                     st.divider()
 
@@ -2059,20 +2050,26 @@ with bottom_container:
     with preview_slot:
         st.caption("🔍 Anteprima")
 
-        prev_img_full = None
+        prev_choices = []
+        prev_files   = {}
+        if bg_source == "Foto Fissa" and bg_static_file:
+            prev_choices.append("Sfondo (Foto Fissa)"); prev_files["Sfondo (Foto Fissa)"] = bg_static_file
+        if bg_source == "Video" and bg_video_file:
+            prev_choices.append("Sfondo (Video, 1° frame)"); prev_files["Sfondo (Video, 1° frame)"] = bg_video_file
+        if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
+        if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
+        if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
 
-        if bg_source == "Foto Fissa":
-            if bg_static_file:
-                bg_static_file.seek(0)
-                prev_img_full = np.array(Image.open(bg_static_file).convert("RGB"))
-            else:
-                st.caption("Carica una foto in '🎨 Sfondo' per vedere l'anteprima.")
-
-        elif bg_source == "Video":
-            if bg_video_file:
-                bg_video_file.seek(0)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(bg_video_file.name)[1]) as _tmpv:
-                    _tmpv.write(bg_video_file.read())
+        if not prev_choices:
+            st.caption("Carica almeno una foto (Master, Calderone o Sfondo) per vedere l'anteprima.")
+        else:
+            prev_sel = st.selectbox("Anteprima su", prev_choices,
+                label_visibility="collapsed", key="unified_prev_sel")
+            pf = prev_files[prev_sel]
+            if prev_sel == "Sfondo (Video, 1° frame)":
+                pf.seek(0)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(pf.name)[1]) as _tmpv:
+                    _tmpv.write(pf.read())
                     _tmp_prev_path = _tmpv.name
                 _cap_prev = cv2.VideoCapture(_tmp_prev_path)
                 _ret_prev, _frame_bgr = _cap_prev.read()
@@ -2082,26 +2079,10 @@ with bottom_container:
                     st.caption("🎬 Primo fotogramma del video — nel render cambia nel tempo (con loop).")
                 else:
                     st.caption("⚠️ Non riesco a leggere il video, controlla il formato.")
+                    prev_img_full = np.zeros((720, 1280, 3), dtype=np.uint8)
             else:
-                st.caption("Carica un video in '🎨 Sfondo' per vedere l'anteprima.")
-
-        else:  # Calderone (originale): stesso comportamento di sempre, con scelta tra M1/M2/Calderone
-            prev_choices = []
-            prev_files   = {}
-            if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
-            if up_m2: prev_choices.append("Master 2");             prev_files["Master 2"] = up_m2
-            if up_t:  prev_choices.append("Prima foto Calderone"); prev_files["Prima foto Calderone"] = up_t[0]
-
-            if not prev_choices:
-                st.caption("Carica almeno una foto (Master o Calderone) per vedere l'anteprima.")
-            else:
-                prev_sel = st.selectbox("Anteprima su", prev_choices,
-                    label_visibility="collapsed", key="unified_prev_sel")
-                pf = prev_files[prev_sel]
                 pf.seek(0)
                 prev_img_full = np.array(Image.open(pf).convert("RGB"))
-
-        if prev_img_full is not None:
 
             _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
                          "9:16 (Verticale)":  (720, 1280),
@@ -2344,5 +2325,6 @@ with c3:
 
         if st.session_state.r_path:
             with open(st.session_state.r_path, "r") as f: r_txt = f.read()
+            st.text_area("📄 TECHNICAL REPORT", r_txt, height=380)
             st.download_button("📄 SCARICA REPORT", r_txt,
                 file_name=f"{base}_report.txt")
