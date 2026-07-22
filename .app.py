@@ -1025,7 +1025,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     _tmpv.write(_ovf.read())
                     _tmp_path = _tmpv.name
                 _cap = cv2.VideoCapture(_tmp_path)
-                overlays_prepared.append({'kind': 'video', 'cap': _cap,
+                overlays_prepared.append({'kind': 'video', 'cap': _cap, 'tmp_path': _tmp_path,
                                            'cx': _ov['cx'], 'cy': _ov['cy'], 'scale': _ov['scale']})
             else:
                 overlays_prepared.append({'kind': 'image', 'rgba': load_overlay_image(_ovf),
@@ -1296,7 +1296,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 if prog <= m1_end:
                     _ramp_m1 = np.clip(prog / m1_end if m1_end > 0.001 else 1.0, 0.0, 1.0)
                     if _ramp_m1 < 0.02:
-                        return _finalize(img_m1, f, t)
+                        return _finalize(_custom_bg if _custom_bg is not None else img_m1, f, t)
                     _m1_prob = 1.0 - _ramp_m1
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
@@ -1314,7 +1314,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     _span_m2 = 1.0 - m2_start if m2_start < 0.999 else 1e-6
                     _ramp_m2 = np.clip((prog - m2_start) / _span_m2, 0.0, 1.0)
                     if _ramp_m2 > 0.98:
-                        return _finalize(img_m2, f, t)
+                        return _finalize(_custom_bg if _custom_bg is not None else img_m2, f, t)
                     _m2_prob = _ramp_m2
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
@@ -1515,6 +1515,17 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     v_out = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(v_out, codec="libx264", audio_codec="aac" if up_aud else None,
                          fps=fps, bitrate="5000k", logger=None)
+
+    # --- pulizia risorse video (capture aperti + file temporanei) ---
+    if bg_video_cap is not None:
+        bg_video_cap.release()
+        try: os.unlink(_bg_tmp_path)
+        except OSError: pass
+    for _ovp in overlays_prepared:
+        if _ovp.get('kind') == 'video':
+            _ovp['cap'].release()
+            try: os.unlink(_ovp['tmp_path'])
+            except OSError: pass
 
     rhythm_on = beat_sync and not slideshow_mode and GENRE_PRESETS[genre]["rhythm"]
 
@@ -1770,9 +1781,16 @@ with bottom_container:
                     if bg_video_file:
                         _src_opts.append("Video")
 
+                    _ssrc_key = f"ssrc_{i}"
+                    if _ssrc_key in st.session_state and st.session_state[_ssrc_key] not in _src_opts:
+                        # la sorgente scelta in precedenza non è più disponibile (es. hai rimosso
+                        # il file caricato) — resetto per evitare che il widget resti bloccato
+                        # su un valore inesistente.
+                        del st.session_state[_ssrc_key]
+
                     if len(_src_opts) > 1:
                         s_dict['source'] = st.radio("🖇️ Sorgente", _src_opts,
-                            horizontal=True, key=f"ssrc_{i}",
+                            horizontal=True, key=_ssrc_key,
                             help="Cosa mostra questa striscia — scegli liberamente tra tutto quello "
                                  "che hai caricato, indipendentemente da cosa mostra lo sfondo generale.")
                     else:
