@@ -2099,31 +2099,25 @@ with bottom_container:
 
         prev_img_full = None
 
-        if bg_source == "Foto Fissa":
-            if bg_static_file:
-                bg_static_file.seek(0)
-                prev_img_full = np.array(Image.open(bg_static_file).convert("RGB"))
-            else:
-                st.caption("Carica una foto in '🎨 Sfondo' per vedere l'anteprima.")
+        if bg_static_file:
+            bg_static_file.seek(0)
+            prev_img_full = np.array(Image.open(bg_static_file).convert("RGB"))
 
-        elif bg_source == "Video":
-            if bg_video_file:
-                bg_video_file.seek(0)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(bg_video_file.name)[1]) as _tmpv:
-                    _tmpv.write(bg_video_file.read())
-                    _tmp_prev_path = _tmpv.name
-                _cap_prev = cv2.VideoCapture(_tmp_prev_path)
-                _ret_prev, _frame_bgr = _cap_prev.read()
-                _cap_prev.release()
-                if _ret_prev:
-                    prev_img_full = cv2.cvtColor(_frame_bgr, cv2.COLOR_BGR2RGB)
-                    st.caption("🎬 Primo fotogramma del video — nel render cambia nel tempo (con loop).")
-                else:
-                    st.caption("⚠️ Non riesco a leggere il video, controlla il formato.")
+        elif bg_video_file:
+            bg_video_file.seek(0)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(bg_video_file.name)[1]) as _tmpv:
+                _tmpv.write(bg_video_file.read())
+                _tmp_prev_path = _tmpv.name
+            _cap_prev = cv2.VideoCapture(_tmp_prev_path)
+            _ret_prev, _frame_bgr = _cap_prev.read()
+            _cap_prev.release()
+            if _ret_prev:
+                prev_img_full = cv2.cvtColor(_frame_bgr, cv2.COLOR_BGR2RGB)
+                st.caption("🎬 Primo fotogramma del video — nel render cambia nel tempo (con loop).")
             else:
-                st.caption("Carica un video in '🎨 Sfondo' per vedere l'anteprima.")
+                st.caption("⚠️ Non riesco a leggere il video, controlla il formato.")
 
-        else:  # Calderone (originale): stesso comportamento di sempre, con scelta tra M1/M2/Calderone
+        else:  # nessuno sfondo caricato: fallback su Master/Calderone come sempre
             prev_choices = []
             prev_files   = {}
             if up_m1: prev_choices.append("Master 1");             prev_files["Master 1"] = up_m1
