@@ -487,8 +487,35 @@ def draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw):
     return overlay
 
 
+def fit_whole_photo_in_box(src, canvas_h, canvas_w, box_cx, box_cy, box_h, box_w):
+    """
+    Adatta l'INTERA immagine 'src' (ritaglio 'cover', centrato) dentro un riquadro di
+    box_h x box_w, posizionato con centro in (box_cx, box_cy) sul canvas canvas_h x
+    canvas_w. Ritorna una patch grande quanto il canvas, con la foto SOLO dentro quel
+    riquadro (il resto nero) — da usare insieme alla maschera della forma, così la
+    forma mostra la foto intera adattata invece di un frammento della stessa posizione.
+    """
+    box_h = max(1, int(box_h))
+    box_w = max(1, int(box_w))
+    fitted = cover_crop(src, box_w, box_h)
+    fitted = cv2.resize(fitted, (box_w, box_h))
+
+    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=src.dtype)
+    x0 = int(box_cx - box_w // 2)
+    y0 = int(box_cy - box_h // 2)
+    src_x0, src_y0 = max(0, -x0), max(0, -y0)
+    dst_x0, dst_y0 = max(0, x0), max(0, y0)
+    dst_x1 = min(canvas_w, x0 + box_w)
+    dst_y1 = min(canvas_h, y0 + box_h)
+    src_x1 = src_x0 + (dst_x1 - dst_x0)
+    src_y1 = src_y0 + (dst_y1 - dst_y0)
+    if dst_x1 > dst_x0 and dst_y1 > dst_y0:
+        canvas[dst_y0:dst_y1, dst_x0:dst_x1] = fitted[src_y0:src_y1, src_x0:src_x1]
+    return canvas
+
+
 def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
-                  length_pct, thickness_px, chroma_on, chroma_amt, mode, opacity):
+                  length_pct, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False):
     """Disegna una striscia ruotata (lancetta) usando una maschera OpenCV."""
     cx = int(cx_pct / 100.0 * w)
     cy = int(cy_pct / 100.0 * h)
@@ -515,7 +542,13 @@ def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
     ], dtype=np.int32)
     cv2.fillPoly(mask, [pts], 255)
 
-    patch = src_stripe.copy()
+    if full_fit:
+        bx0, by0 = pts[:, 0].min(), pts[:, 1].min()
+        bx1, by1 = pts[:, 0].max(), pts[:, 1].max()
+        box_cx, box_cy = (bx0 + bx1) // 2, (by0 + by1) // 2
+        patch = fit_whole_photo_in_box(src_stripe, h, w, box_cx, box_cy, by1 - by0, bx1 - bx0)
+    else:
+        patch = src_stripe.copy()
     if chroma_on and chroma_amt > 0:
         patch = apply_chroma(patch, chroma_amt)
 
@@ -525,7 +558,7 @@ def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
 
 
 def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
-                 filled, thickness_px, chroma_on, chroma_amt, mode, opacity):
+                 filled, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False):
     """Disegna un cerchio (pieno o bordo) come maschera."""
     cx = int(cx_pct / 100.0 * w)
     cy = int(cy_pct / 100.0 * h)
@@ -539,7 +572,10 @@ def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
         t = max(1, thickness_px)
         cv2.circle(mask, (cx, cy), radius, 255, t)
 
-    patch = src_stripe.copy()
+    if full_fit:
+        patch = fit_whole_photo_in_box(src_stripe, h, w, cx, cy, radius * 2, radius * 2)
+    else:
+        patch = src_stripe.copy()
     if chroma_on and chroma_amt > 0:
         patch = apply_chroma(patch, chroma_amt)
 
@@ -550,7 +586,7 @@ def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
 
 
 def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
-                          spessore_pct, lunghezza_pct, chroma_on, chroma_amt, mode, opacity):
+                          spessore_pct, lunghezza_pct, chroma_on, chroma_amt, mode, opacity, full_fit=False):
     """
     Striscia rettangolare larga che ruota attorno al suo centro.
     cx_pct, cy_pct: centro di rotazione (%)
@@ -585,7 +621,13 @@ def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [pts], 255)
 
-    patch = src_stripe.copy()
+    if full_fit:
+        bx0, by0 = pts[:, 0].min(), pts[:, 1].min()
+        bx1, by1 = pts[:, 0].max(), pts[:, 1].max()
+        box_cx, box_cy = (bx0 + bx1) // 2, (by0 + by1) // 2
+        patch = fit_whole_photo_in_box(src_stripe, h, w, box_cx, box_cy, by1 - by0, bx1 - bx0)
+    else:
+        patch = src_stripe.copy()
     if chroma_on and chroma_amt > 0:
         patch = apply_chroma(patch, chroma_amt)
 
@@ -646,17 +688,27 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
     if extra_sources:
         sources.update(extra_sources)
 
-    def _paste_h(src, p0, p1, l0, l1, chroma_amt, mode, opacity):
+    def _paste_h(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False):
         if p1 > p0 and l1 > l0:
-            patch = src[p0:p1, l0:l1].copy()
+            if full_fit:
+                box_cx, box_cy = (l0 + l1) // 2, (p0 + p1) // 2
+                full = fit_whole_photo_in_box(src, h, w, box_cx, box_cy, p1 - p0, l1 - l0)
+                patch = full[p0:p1, l0:l1].copy()
+            else:
+                patch = src[p0:p1, l0:l1].copy()
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[p0:p1, l0:l1]
             out[p0:p1, l0:l1] = blend_patch(base_patch, patch, mode, opacity)
 
-    def _paste_v(src, p0, p1, l0, l1, chroma_amt, mode, opacity):
+    def _paste_v(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False):
         if p1 > p0 and l1 > l0:
-            patch = src[l0:l1, p0:p1].copy()
+            if full_fit:
+                box_cx, box_cy = (p0 + p1) // 2, (l0 + l1) // 2
+                full = fit_whole_photo_in_box(src, h, w, box_cx, box_cy, l1 - l0, p1 - p0)
+                patch = full[l0:l1, p0:p1].copy()
+            else:
+                patch = src[l0:l1, p0:p1].copy()
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[l0:l1, p0:p1]
@@ -676,12 +728,13 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         blend_mode = s.get('blend_mode', 'Normal')
         opacity    = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
         opacity    = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'move_random')
+        full_fit   = s.get('full_fit', False)
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
-            _paste_h(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
+            _paste_h(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit)
         else:
-            _paste_v(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity)
+            _paste_v(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit)
 
     for idx, s in enumerate(stripes):
         if flash_active:
@@ -707,7 +760,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                           s.get('cx', 50.0), s.get('cy', 50.0),
                           angle, length_pct,
                           int(kf_get(s, 'size', t, total_dur, s.get('size', 10))),
-                          chroma_on, chroma_amt, mode, opacity)
+                          chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False))
 
         elif s_orient == "Cerchio":
             radius = kf_get(s, 'radius', t, total_dur, s.get('radius', 30.0))
@@ -720,7 +773,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
                          radius, s.get('filled', True),
                          int(kf_get(s, 'size', t, total_dur, s.get('size', 8))),
-                         chroma_on, chroma_amt, mode, opacity)
+                         chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False))
 
         elif s_orient == "Striscia Ruotata":
             angle_base = kf_get(s, 'angle', t, total_dur, s.get('angle', 0.0))
@@ -735,7 +788,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                                   angle,
                                   float(kf_get(s, 'size', t, total_dur, s.get('size', 15.0))),
                                   length_pct,
-                                  chroma_on, chroma_amt, mode, opacity)
+                                  chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False))
 
         elif s_orient in ("Orizzontale", "Verticale"):
             _draw(s, offset, s_orient == "Orizzontale", this_src)
@@ -1795,6 +1848,12 @@ with bottom_container:
                                  "che hai caricato, indipendentemente da cosa mostra lo sfondo generale.")
                     else:
                         s_dict['source'] = "Calderone"
+
+                    s_dict['full_fit'] = st.toggle("🖼️ Foto intera nella striscia (adatta, non taglia)",
+                        value=False, key=f"sfit_{i}",
+                        help="OFF (predefinito): la striscia è una finestra sulla sorgente, mostra solo "
+                             "il frammento in quella posizione. ON: la foto/frame intera viene adattata "
+                             "(ritagliata al centro solo per riempire la forma) dentro la striscia.")
 
                     st.divider()
 
