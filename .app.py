@@ -10,6 +10,7 @@ import random
 import os
 import librosa
 import gc
+import copy
 import json
 from datetime import datetime
 
@@ -487,6 +488,28 @@ def draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw):
     return overlay
 
 
+def make_feather_mask(h, w, feather_pct):
+    """
+    Maschera 2D (h,w) valori 0-1: 1 al centro, sfuma verso 0 ai bordi in proporzione
+    a feather_pct (0 = bordo netto come sempre, 100 = sfumatura massima verso il centro).
+    """
+    if feather_pct <= 0:
+        return np.ones((h, w), dtype=np.float32)
+    fh = max(1, int(h * feather_pct / 200.0))
+    fw = max(1, int(w * feather_pct / 200.0))
+    ramp_h = np.ones(h, dtype=np.float32)
+    ramp_w = np.ones(w, dtype=np.float32)
+    if fh > 0 and fh * 2 <= h:
+        fade = np.linspace(0.0, 1.0, fh, dtype=np.float32)
+        ramp_h[:fh] = fade
+        ramp_h[h - fh:] = fade[::-1]
+    if fw > 0 and fw * 2 <= w:
+        fade = np.linspace(0.0, 1.0, fw, dtype=np.float32)
+        ramp_w[:fw] = fade
+        ramp_w[w - fw:] = fade[::-1]
+    return np.outer(ramp_h, ramp_w)
+
+
 def fit_whole_photo_in_box(src, canvas_h, canvas_w, box_cx, box_cy, box_h, box_w):
     """
     Adatta l'INTERA immagine 'src' (ritaglio 'cover', centrato) dentro un riquadro di
@@ -514,8 +537,19 @@ def fit_whole_photo_in_box(src, canvas_h, canvas_w, box_cx, box_cy, box_h, box_w
     return canvas
 
 
+def feather_binary_mask(mask, feather_pct):
+    """Sfuma i bordi di una maschera binaria (0/255) con un blur gaussiano proporzionale
+    a feather_pct (0 = bordo netto invariato, 100 = sfumatura massima)."""
+    if feather_pct <= 0:
+        return mask
+    k = max(1, int(min(mask.shape) * feather_pct / 200.0))
+    k = k * 2 + 1  # kernel dispari
+    return cv2.GaussianBlur(mask, (k, k), 0)
+
+
 def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
-                  length_pct, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False):
+                  length_pct, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False,
+                  edge_feather=0.0):
     """Disegna una striscia ruotata (lancetta) usando una maschera OpenCV."""
     cx = int(cx_pct / 100.0 * w)
     cy = int(cy_pct / 100.0 * h)
@@ -541,6 +575,8 @@ def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
         [ex + px, ey + py],
     ], dtype=np.int32)
     cv2.fillPoly(mask, [pts], 255)
+    if edge_feather > 0:
+        mask = feather_binary_mask(mask, edge_feather)
 
     if full_fit:
         bx0, by0 = pts[:, 0].min(), pts[:, 1].min()
@@ -558,7 +594,8 @@ def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
 
 
 def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
-                 filled, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False):
+                 filled, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False,
+                 edge_feather=0.0):
     """Disegna un cerchio (pieno o bordo) come maschera."""
     cx = int(cx_pct / 100.0 * w)
     cy = int(cy_pct / 100.0 * h)
@@ -571,6 +608,8 @@ def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
     else:
         t = max(1, thickness_px)
         cv2.circle(mask, (cx, cy), radius, 255, t)
+    if edge_feather > 0:
+        mask = feather_binary_mask(mask, edge_feather)
 
     if full_fit:
         patch = fit_whole_photo_in_box(src_stripe, h, w, cx, cy, radius * 2, radius * 2)
@@ -586,7 +625,8 @@ def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
 
 
 def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
-                          spessore_pct, lunghezza_pct, chroma_on, chroma_amt, mode, opacity, full_fit=False):
+                          spessore_pct, lunghezza_pct, chroma_on, chroma_amt, mode, opacity, full_fit=False,
+                          edge_feather=0.0):
     """
     Striscia rettangolare larga che ruota attorno al suo centro.
     cx_pct, cy_pct: centro di rotazione (%)
@@ -620,6 +660,8 @@ def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
 
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [pts], 255)
+    if edge_feather > 0:
+        mask = feather_binary_mask(mask, edge_feather)
 
     if full_fit:
         bx0, by0 = pts[:, 0].min(), pts[:, 1].min()
@@ -688,7 +730,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
     if extra_sources:
         sources.update(extra_sources)
 
-    def _paste_h(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False):
+    def _paste_h(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False, edge_feather=0.0):
         if p1 > p0 and l1 > l0:
             if full_fit:
                 box_cx, box_cy = (l0 + l1) // 2, (p0 + p1) // 2
@@ -699,9 +741,14 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[p0:p1, l0:l1]
-            out[p0:p1, l0:l1] = blend_patch(base_patch, patch, mode, opacity)
+            if edge_feather > 0:
+                feather = make_feather_mask(p1 - p0, l1 - l0, edge_feather)
+                alpha = (feather * opacity)[:, :, np.newaxis]
+                out[p0:p1, l0:l1] = blend_layer(base_patch, patch, alpha, mode)
+            else:
+                out[p0:p1, l0:l1] = blend_patch(base_patch, patch, mode, opacity)
 
-    def _paste_v(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False):
+    def _paste_v(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False, edge_feather=0.0):
         if p1 > p0 and l1 > l0:
             if full_fit:
                 box_cx, box_cy = (p0 + p1) // 2, (l0 + l1) // 2
@@ -712,7 +759,12 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[l0:l1, p0:p1]
-            out[l0:l1, p0:p1] = blend_patch(base_patch, patch, mode, opacity)
+            if edge_feather > 0:
+                feather = make_feather_mask(l1 - l0, p1 - p0, edge_feather)
+                alpha = (feather * opacity)[:, :, np.newaxis]
+                out[l0:l1, p0:p1] = blend_layer(base_patch, patch, alpha, mode)
+            else:
+                out[l0:l1, p0:p1] = blend_patch(base_patch, patch, mode, opacity)
 
     def _draw(s, offset, is_h, src):
         if flash_active:
@@ -729,12 +781,13 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         opacity    = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
         opacity    = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'move_random')
         full_fit   = s.get('full_fit', False)
+        edge_feather = float(s.get('edge_feather', 0.0))
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
-            _paste_h(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit)
+            _paste_h(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit, edge_feather)
         else:
-            _paste_v(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit)
+            _paste_v(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit, edge_feather)
 
     for idx, s in enumerate(stripes):
         if flash_active:
@@ -760,7 +813,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                           s.get('cx', 50.0), s.get('cy', 50.0),
                           angle, length_pct,
                           int(kf_get(s, 'size', t, total_dur, s.get('size', 10))),
-                          chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False))
+                          chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False),
+                          float(s.get('edge_feather', 0.0)))
 
         elif s_orient == "Cerchio":
             radius = kf_get(s, 'radius', t, total_dur, s.get('radius', 30.0))
@@ -773,7 +827,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
                          radius, s.get('filled', True),
                          int(kf_get(s, 'size', t, total_dur, s.get('size', 8))),
-                         chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False))
+                         chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False),
+                         float(s.get('edge_feather', 0.0)))
 
         elif s_orient == "Striscia Ruotata":
             angle_base = kf_get(s, 'angle', t, total_dur, s.get('angle', 0.0))
@@ -788,7 +843,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                                   angle,
                                   float(kf_get(s, 'size', t, total_dur, s.get('size', 15.0))),
                                   length_pct,
-                                  chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False))
+                                  chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False),
+                                  float(s.get('edge_feather', 0.0)))
 
         elif s_orient in ("Orizzontale", "Verticale"):
             _draw(s, offset, s_orient == "Orizzontale", this_src)
@@ -1802,6 +1858,36 @@ with bottom_container:
                         _to_delete = i
                         continue
 
+                    # Copia impostazioni da un'altra striscia esistente
+                    _other_ids = [oid for oid in st.session_state.stripe_ids if oid != i]
+                    if _other_ids:
+                        _other_labels = {oid: f"Striscia {st.session_state.stripe_ids.index(oid)+1}"
+                                          for oid in _other_ids}
+                        col_cpsel, col_cpbtn = st.columns([2, 1])
+                        with col_cpsel:
+                            _copy_from_label = st.selectbox("Copia impostazioni da",
+                                list(_other_labels.values()), key=f"copysel_{i}",
+                                label_visibility="collapsed")
+                        with col_cpbtn:
+                            if st.button("📋 Copia", key=f"copybtn_{i}"):
+                                _src_id = next(oid for oid, lbl in _other_labels.items()
+                                               if lbl == _copy_from_label)
+                                _stripe_key_prefixes = [
+                                    "bm","ca","cbr","ccx","ccy","ce","ces","cf","ch","cr","ct",
+                                    "fl","la","lang","lar","lbr","lcx","lcy","ll","lrs","lt",
+                                    "mbr","mr","ms","oc","op","rang","rar","rbr","rcx","rcy",
+                                    "rl","rrs","rsp","sc","sfit","sef","sl","so","ss","ssrc",
+                                ]
+                                for _pfx in _stripe_key_prefixes:
+                                    _old_key = f"{_pfx}_{_src_id}"
+                                    if _old_key in st.session_state:
+                                        st.session_state[f"{_pfx}_{i}"] = st.session_state[_old_key]
+                                _kf_src_key = f"kf_stripe_{_src_id}"
+                                if _kf_src_key in st.session_state:
+                                    st.session_state[f"kf_stripe_{i}"] = copy.deepcopy(
+                                        st.session_state[_kf_src_key])
+                                st.rerun()
+
                     # Forma
                     orient_opts = ["Orizzontale", "Verticale", "Striscia Ruotata", "Lancetta", "Cerchio"]
                     if f"so_{i}" not in st.session_state:
@@ -1854,6 +1940,10 @@ with bottom_container:
                         help="OFF (predefinito): la striscia è una finestra sulla sorgente, mostra solo "
                              "il frammento in quella posizione. ON: la foto/frame intera viene adattata "
                              "(ritagliata al centro solo per riempire la forma) dentro la striscia.")
+
+                    s_dict['edge_feather'] = st.slider("〰️ Opacità ai bordi", 0, 100, 0, key=f"sef_{i}",
+                        help="0 = bordo netto (predefinito). Più alto = i bordi della striscia sfumano "
+                             "gradualmente invece di tagliare di netto.")
 
                     st.divider()
 
