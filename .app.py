@@ -691,8 +691,8 @@ def resolve_reactive_opacity(s_dict, base_opacity, beat_gate_val, beat_sync_on, 
     return base_opacity
 
 
-def build_opacity_mod_curve(onset_times, total_f, fps, attack=0.02, decay=0.08,
-                             sustain=0.5, release=0.2):
+def build_opacity_mod_curve(onset_times, total_f, fps, attack=0.06, decay=0.35,
+                             sustain=0.65, release=0.6):
     """MODULATION LAB (opzionale, additivo): costruisce UNA SOLA VOLTA per
     l'intera durata un inviluppo ADSR triggerato sugli onset reali gia'
     rilevati da analyze_audio, sulla stessa griglia frame-accurate (total_f,
@@ -703,6 +703,13 @@ def build_opacity_mod_curve(onset_times, total_f, fps, attack=0.02, decay=0.08,
     Ritorna un array [0..1] di lunghezza total_f, da moltiplicare per
     l'amount scelto dall'utente e sommare (mai sostituire) all'opacita' delle
     strisce gia' calcolata dal sistema esistente (kf_get + resolve_reactive_opacity).
+
+    attack/decay/sustain/release: di default piu' lenti rispetto alla prima
+    versione (era 0.02/0.08/0.5/0.2, respiro sotto mezzo secondo — quasi
+    impercettibile). Con questi valori il respiro dura circa 1.3s dopo ogni
+    onset, cosi' e' molto piu' probabile che il frame corrente lo catturi
+    vicino al picco invece che gia' rientrato a zero (stessa correzione
+    applicata al Modulation Lab di VideoDecomposer).
     """
     if onset_times is None or len(onset_times) == 0:
         return np.zeros(total_f)
@@ -1076,7 +1083,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     calderone2_cfg=None,
                     bg_source="Calderone (originale)", bg_static_file=None, bg_video_file=None,
                     overlays_cfg=None,
-                    mod_lab_on=False, mod_lab_amount=0.15):
+                    mod_lab_on=False, mod_lab_amount=0.30):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -2502,16 +2509,18 @@ with c3:
                  "(keyframe, beat_react, ecc.): se disattivato, l'output è "
                  "identico a prima."
         )
-        mod_lab_amount = 0.15
+        mod_lab_amount = 0.30
         if mod_lab_on:
             mod_lab_amount = st.slider(
-                "Ampiezza respiro (%)", min_value=0, max_value=40, value=15, step=1,
+                "Ampiezza respiro (%)", min_value=0, max_value=70, value=30, step=1,
                 key="mod_lab_amount_rcp",
-                help="0% = nessun effetto anche a checkbox attivo."
+                help="0% = nessun effetto anche a checkbox attivo. Sommata "
+                     "all'opacita' gia' calcolata (keyframe/beat_react), poi "
+                     "clampata in [0,1]."
             ) / 100.0
     else:
         mod_lab_on = False
-        mod_lab_amount = 0.15
+        mod_lab_amount = 0.30
 
         # --- anteprima BPM + grafico beat/onset: stessa analisi della generazione finale ---
         if slideshow_mode:
