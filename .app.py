@@ -691,13 +691,47 @@ def resolve_reactive_opacity(s_dict, base_opacity, beat_gate_val, beat_sync_on, 
     return base_opacity
 
 
+def build_opacity_mod_curve(onset_times, total_f, fps, attack=0.02, decay=0.08,
+                             sustain=0.5, release=0.2):
+    """MODULATION LAB (opzionale, additivo): costruisce UNA SOLA VOLTA per
+    l'intera durata un inviluppo ADSR triggerato sugli onset reali gia'
+    rilevati da analyze_audio, sulla stessa griglia frame-accurate (total_f,
+    fps) usata da audio_envelope/beat_envelope/beat_phase.
+
+    Ogni onset avvia un ciclo ADSR indipendente; gli inviluppi sovrapposti si
+    sommano e vengono clippati a 1.0 (satura come una voce polifonica).
+    Ritorna un array [0..1] di lunghezza total_f, da moltiplicare per
+    l'amount scelto dall'utente e sommare (mai sostituire) all'opacita' delle
+    strisce gia' calcolata dal sistema esistente (kf_get + resolve_reactive_opacity).
+    """
+    if onset_times is None or len(onset_times) == 0:
+        return np.zeros(total_f)
+    t_grid = np.arange(total_f) / fps
+    total = np.zeros(total_f)
+    sustain_end = attack + decay + 0.3
+    for trig in onset_times:
+        dt = t_grid - trig
+        env = np.zeros(total_f)
+        m_a = (dt >= 0) & (dt < attack)
+        env[m_a] = dt[m_a] / max(attack, 1e-6)
+        m_d = (dt >= attack) & (dt < attack + decay)
+        env[m_d] = 1 - (1 - sustain) * (dt[m_d] - attack) / max(decay, 1e-6)
+        m_s = (dt >= attack + decay) & (dt < sustain_end)
+        env[m_s] = sustain
+        m_r = (dt >= sustain_end) & (dt < sustain_end + release)
+        env[m_r] = sustain * (1 - (dt[m_r] - sustain_end) / max(release, 1e-6))
+        total += env
+    return np.clip(total, 0.0, 1.0)
+
+
 def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripes, stripe_orientation, stripe_glitch,
                         stripe_reverse=False, audio_envelope_val=1.0,
                         stripe_offsets=None,
                         stripe_chroma=False, stripe_flash=False,
                         beat_val=0.0, beat_gate_val=0.0, beat_sync_on=False,
-                        t=0.0, total_dur=10.0, extra_sources=None):
+                        t=0.0, total_dur=10.0, extra_sources=None,
+                        opacity_mod_val=0.0):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
              move_random, move_speed, offset_length, chroma_amount,
@@ -780,6 +814,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         blend_mode = s.get('blend_mode', 'Normal')
         opacity    = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
         opacity    = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'move_random')
+        if opacity_mod_val:
+            opacity = float(np.clip(opacity + opacity_mod_val, 0.0, 1.0))
         full_fit   = s.get('full_fit', False)
         edge_feather = float(s.get('edge_feather', 0.0))
         dim = (h, w) if is_h else (w, h)
@@ -809,6 +845,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_rotate')
+            if opacity_mod_val:
+                opacity = float(np.clip(opacity + opacity_mod_val, 0.0, 1.0))
             draw_lancetta(out, this_src, h, w,
                           s.get('cx', 50.0), s.get('cy', 50.0),
                           angle, length_pct,
@@ -823,6 +861,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
             radius = resolve_reactive_val(s, radius, offset, 'auto_expand')
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_expand')
+            if opacity_mod_val:
+                opacity = float(np.clip(opacity + opacity_mod_val, 0.0, 1.0))
             draw_cerchio(out, this_src, h, w,
                          s.get('cx', 50.0), s.get('cy', 50.0),
                          radius, s.get('filled', True),
@@ -838,6 +878,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                 length_pct = length_pct * (0.2 + 0.8 * audio_envelope_val)
             opacity = kf_get(s, 'opacity', t, total_dur, float(s.get('opacity', 1.0)))
             opacity = resolve_reactive_opacity(s, opacity, beat_gate_val, beat_sync_on, 'auto_rotate')
+            if opacity_mod_val:
+                opacity = float(np.clip(opacity + opacity_mod_val, 0.0, 1.0))
             draw_striscia_ruotata(out, this_src, h, w,
                                   s.get('cx', 50.0), s.get('cy', 50.0),
                                   angle,
@@ -1033,7 +1075,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     manual_bpm=None, onset_sensitivity=None,
                     calderone2_cfg=None,
                     bg_source="Calderone (originale)", bg_static_file=None, bg_video_file=None,
-                    overlays_cfg=None):
+                    overlays_cfg=None,
+                    mod_lab_on=False, mod_lab_amount=0.15):
 
     fps = 24
     total_f = int(max_limit * fps)
@@ -1188,6 +1231,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     beat_phase      = np.zeros(total_f)
     onset_envelope  = np.zeros(total_f)
     rhythm_envelope = None
+    opacity_mod_curve = None
     audio_peak      = 0.0
     bs, bc          = 0, 30
     detected_bpm    = 0.0
@@ -1209,6 +1253,16 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         bs, bc          = audio_result['bs'], audio_result['bc']
         detected_bpm    = audio_result['detected_bpm']
         bpm_source      = audio_result['bpm_source']
+
+        # MODULATION LAB (opzionale, additivo): curva precalcolata UNA sola
+        # volta per l'intera durata. None/tutta-zero se disattivata o se non
+        # ci sono onset -> nessun impatto sul comportamento esistente.
+        if mod_lab_on and len(audio_result['onset_times']) > 0:
+            opacity_mod_curve = build_opacity_mod_curve(
+                audio_result['onset_times'], total_f, fps
+            ) * mod_lab_amount
+        else:
+            opacity_mod_curve = None
 
         # file temporaneo persistente per il muxing audio finale (AudioFileClip più sotto)
         up_aud.seek(0)
@@ -1329,6 +1383,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
             _bval = float(beat_envelope[f])
             _bgate = float(beat_gate[f])
+            _modv = float(opacity_mod_curve[f]) if opacity_mod_curve is not None else 0.0
 
             def _get_bg_slide(glitched_frame=None):
                 if stripe_use_render and glitched_frame is not None:
@@ -1341,7 +1396,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                     stripes, stripe_orientation, False,
                                                     stripe_reverse, _aenv, _soff,
                                                     stripe_chroma, stripe_flash, _bval, _bgate,
-                                                    t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
+                                                    t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                                    opacity_mod_val=_modv)
                 else:
                     out_frame = img_cur
                 return _finalize(out_frame, f, t)
@@ -1364,7 +1420,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
-                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None), opacity_mod_val=_modv)
                     else:
                         out_frame = glitched
                 else:
@@ -1376,7 +1432,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
-                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None))
+                                                        t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None), opacity_mod_val=_modv)
                     else:
                         out_frame = glitched
 
@@ -1504,6 +1560,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             _aenv = float(audio_envelope[f])
             _bval = float(beat_envelope[f])
             _bgate = float(beat_gate[f])
+            _modv = float(opacity_mod_curve[f]) if opacity_mod_curve is not None else 0.0
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
 
             if orientation == "Nessun Effetto":
@@ -1528,6 +1585,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripes, stripe_orientation, False, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                            opacity_mod_val=_modv,
                                             extra_sources=(_extra_src or None)),
                         f, t)
                 return _finalize(_custom_bg if _custom_bg is not None else pick(), f, t)
@@ -1590,6 +1648,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval, _bgate,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
+                                            opacity_mod_val=_modv,
                                             extra_sources=(_extra_src or None))
             elif _custom_bg is not None:
                 # niente strisce ma sfondo custom impostato: il frame finale è lo sfondo, non il Calderone
@@ -2433,6 +2492,27 @@ with c3:
             help="Individua ogni singolo transiente audio, regolare o no. Basso = solo colpi forti. Alto = intercetta anche i transienti deboli."
         )
 
+        st.markdown("---")
+        mod_lab_on = st.checkbox(
+            "🧪 Modulation Lab (beta): respiro opacità su onset",
+            value=False, key="mod_lab_on_rcp",
+            help="Aggiunge un piccolo respiro ADDITIVO all'opacità di TUTTE le "
+                 "strisce, pilotato da un inviluppo ADSR triggerato sugli onset "
+                 "reali del brano. Non sostituisce nulla del sistema esistente "
+                 "(keyframe, beat_react, ecc.): se disattivato, l'output è "
+                 "identico a prima."
+        )
+        mod_lab_amount = 0.15
+        if mod_lab_on:
+            mod_lab_amount = st.slider(
+                "Ampiezza respiro (%)", min_value=0, max_value=40, value=15, step=1,
+                key="mod_lab_amount_rcp",
+                help="0% = nessun effetto anche a checkbox attivo."
+            ) / 100.0
+    else:
+        mod_lab_on = False
+        mod_lab_amount = 0.15
+
         # --- anteprima BPM + grafico beat/onset: stessa analisi della generazione finale ---
         if slideshow_mode:
             st.caption("⚠️ Beat Sync disattivato in modalità Slideshow: l'anteprima qui sotto non si applicherà al render.")
@@ -2503,7 +2583,8 @@ with c3:
             manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity,
             calderone2_cfg=calderone2_cfg,
             bg_source=bg_source, bg_static_file=bg_static_file, bg_video_file=bg_video_file,
-            overlays_cfg=overlays_cfg
+            overlays_cfg=overlays_cfg,
+            mod_lab_on=mod_lab_on, mod_lab_amount=mod_lab_amount
         )
         st.session_state.v_path  = v
         st.session_state.r_path  = r
