@@ -1086,7 +1086,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     mod_lab_on=False, mod_lab_amount=0.30):
 
     fps = 24
-    total_f = int(max_limit * fps)
+    # Blindatura: max_limit=0 (o negativo, per qualche errore di UI) renderebbe
+    # total_f=0, rompendo audio_envelope/beat_envelope/beat_gate/opacity_mod_curve
+    # e ogni altro array costruito con questa lunghezza. Un render da 1 frame
+    # e' un fallback ragionevole, uno IndexError a meta' generazione no.
+    total_f = max(1, int(max_limit * fps))
     prog_bar = st.progress(0)
 
     def load_img_full(f):
@@ -1266,7 +1270,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         # ci sono onset -> nessun impatto sul comportamento esistente.
         if mod_lab_on and len(audio_result['onset_times']) > 0:
             opacity_mod_curve = build_opacity_mod_curve(
-                audio_result['onset_times'], total_f, fps
+                audio_result['onset_times'], max(1, total_f), fps
             ) * mod_lab_amount
         else:
             opacity_mod_curve = None
@@ -1390,7 +1394,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
             _bval = float(beat_envelope[f])
             _bgate = float(beat_gate[f])
-            _modv = float(opacity_mod_curve[f]) if opacity_mod_curve is not None else 0.0
+            _modv = float(opacity_mod_curve[min(f, len(opacity_mod_curve) - 1)]) if opacity_mod_curve is not None and len(opacity_mod_curve) > 0 else 0.0
 
             def _get_bg_slide(glitched_frame=None):
                 if stripe_use_render and glitched_frame is not None:
@@ -1567,7 +1571,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             _aenv = float(audio_envelope[f])
             _bval = float(beat_envelope[f])
             _bgate = float(beat_gate[f])
-            _modv = float(opacity_mod_curve[f]) if opacity_mod_curve is not None else 0.0
+            _modv = float(opacity_mod_curve[min(f, len(opacity_mod_curve) - 1)]) if opacity_mod_curve is not None and len(opacity_mod_curve) > 0 else 0.0
             _soff = [stripe_offsets_t[si][f] for si in range(len(stripes))] if stripes else []
 
             if orientation == "Nessun Effetto":
