@@ -1284,7 +1284,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     # --- traiettorie strisce (ora che beat_envelope/onset_envelope esistono) ---
     if stripe_mode and stripes:
-        rng = np.random.default_rng(42)
         t_arr = np.linspace(0, max_limit, total_f)
         # orologio musicale: quanti beat sono trascorsi, in modo continuo.
         # A 140 BPM avanza esattamente il doppio più veloce che a 70 BPM — non un'accelerazione
@@ -1317,10 +1316,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             elif s_orient in ("Orizzontale", "Verticale"):
                 base_offset = s.get('offset_length', 50.0)
                 if s.get('move_random', False):
+                    # rng dedicato ancorato all'ID stabile della striscia (non alla sua
+                    # posizione in lista): così cancellare/aggiungere altre strisce non
+                    # cambia la traiettoria random di quelle già esistenti.
+                    _stripe_rng = np.random.default_rng(42 + int(s.get('id', 0)))
                     spd = max(0.1, s.get('move_speed', 1.0))
-                    freq1 = spd * rng.uniform(0.1, 0.3)
-                    freq2 = spd * rng.uniform(0.05, 0.15)
-                    phase1, phase2 = rng.uniform(0, np.pi*2, 2)
+                    freq1 = spd * _stripe_rng.uniform(0.1, 0.3)
+                    freq2 = spd * _stripe_rng.uniform(0.05, 0.15)
+                    phase1, phase2 = _stripe_rng.uniform(0, np.pi*2, 2)
                     traj = (np.sin(2*np.pi*freq1*base_t + phase1) * 0.5 +
                             np.sin(2*np.pi*freq2*base_t + phase2) * 0.5)
                     traj = (traj + 1) / 2 * 80 + 10
@@ -1975,6 +1978,7 @@ with bottom_container:
                         horizontal=True, key=f"so_{i}")
 
                     s_dict = {
+                        'id':            i,
                         'orientation':   stripe_orient_i,
                         'chroma_amount': 6,
                         'flash':         False,
