@@ -2522,9 +2522,6 @@ with c3:
                      "all'opacita' gia' calcolata (keyframe/beat_react), poi "
                      "clampata in [0,1]."
             ) / 100.0
-    else:
-        mod_lab_on = False
-        mod_lab_amount = 0.30
 
         # --- anteprima BPM + grafico beat/onset: stessa analisi della generazione finale ---
         if slideshow_mode:
@@ -2575,6 +2572,9 @@ with c3:
                 st.line_chart(chart_df, height=180)
         else:
             st.caption("Carica un audio per l'anteprima BPM e il grafico beat/onset.")
+    else:
+        mod_lab_on = False
+        mod_lab_amount = 0.30
 
     st.divider()
 
