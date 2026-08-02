@@ -1376,15 +1376,41 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     pv = min(int(100 * (1 - c_n) + 5), 100)
     ev = int(75 * (1 - c_n) + 2)
 
+    has_masters_val = (img_m1 is not None) and (img_m2 is not None)
+
+    def compute_glitch_val(f, prog):
+        """Stessa identica intensità glitch audio/beat-reattiva usata dal Calderone 1
+        (Chaos + power curve + beat strength + ramp Master 1/2), riusata pari pari
+        anche per lo split del Calderone 2 quando 'apply_glitch' è attivo."""
+        if rhythm_envelope is not None:
+            val_base = rhythm_envelope[f]
+        else:
+            mid = 0.5
+            v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
+            val_base = (v_base / 100.0) * audio_envelope[f]
+
+        if beat_sync and beat_envelope[f] > 0:
+            val_base = val_base * (1.0 + beat_envelope[f] * (bs / 100.0))
+
+        if has_masters_val:
+            if prog <= m1_end:
+                ramp = prog / m1_end if m1_end > 0.001 else 1.0
+                return val_base * np.clip(ramp, 0.0, 1.0)
+            elif prog >= m2_start:
+                span = 1.0 - m2_start if m2_start < 0.999 else 1e-6
+                ramp = 1.0 - ((prog - m2_start) / span)
+                return val_base * np.clip(ramp, 0.0, 1.0)
+        return val_base
+
     # --- finalizzazione frame: overlay foto/video sopra lo sfondo, poi resize export ---
-    def apply_calderone_split(raw_frame, f):
+    def apply_calderone_split(raw_frame, f, t):
         """Se lo split statico Calderone 1/2 è attivo, taglia raw_frame in due metà fisse:
         una resta il Calderone 1 (con tutti gli effetti già applicati), l'altra viene
         sostituita con una foto del Calderone 2 (cover-crop), pescata alla velocità
         dedicata calderone2_cfg['speed']. Se 'apply_glitch' è attivo, applica anche a
-        questa metà lo stesso trattamento Chaos/Strand/Geometria del Calderone 1
-        (intensità base da Chaos, non audio-reattiva, per restare indipendente dal
-        resto del frame)."""
+        questa metà lo stesso trattamento Chaos/Strand/Geometria del Calderone 1, con
+        la STESSA intensità audio/beat-reattiva (compute_glitch_val) — non più una
+        intensità fissa, cosi' la metà Calderone 2 "respira" col brano come il resto."""
         if not (calderone2_cfg and calderone2_cfg.get('split_on') and pool_imgs2):
             return raw_frame
         rh, rw = raw_frame.shape[:2]
@@ -1394,7 +1420,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
         def _maybe_glitch(patch, ph, pw):
             if calderone2_cfg.get('apply_glitch'):
-                return apply_glitch_stripes(patch, patch, ph, pw, orientation, strand_val, rand_lines, c_n)
+                prog = t / max_limit
+                val2 = compute_glitch_val(f, prog)
+                return apply_glitch_stripes(patch, patch, ph, pw, orientation, strand_val, rand_lines, val2)
             return patch
 
         if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
@@ -1412,7 +1440,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         return out
 
     def _finalize(raw_frame, f, t):
-        raw_frame = apply_calderone_split(raw_frame, f)
+        raw_frame = apply_calderone_split(raw_frame, f, t)
         if overlays_prepared:
             # canvas = dimensioni REALI del frame corrente, non h/w fissi: img_m1/img_m2
             # sono a piena risoluzione (out_w x out_h), mentre il resto della pipeline
@@ -1592,30 +1620,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     cache_set(key, res)
                     return res
 
-            has_masters_val = (img_m1 is not None) and (img_m2 is not None)
-
-            if rhythm_envelope is not None:
-                val_base = rhythm_envelope[f]
-            else:
-                mid = 0.5
-                v_base = (sv + (prog/mid)*(pv-sv)) if prog <= mid else (pv + ((prog-mid)/mid)*(ev-pv))
-                val_base = (v_base / 100.0) * audio_envelope[f]
-
-            if beat_sync and beat_envelope[f] > 0:
-                val_base = val_base * (1.0 + beat_envelope[f] * (bs / 100.0))
-
-            if has_masters_val:
-                if prog <= m1_end:
-                    ramp = prog / m1_end if m1_end > 0.001 else 1.0
-                    val = val_base * np.clip(ramp, 0.0, 1.0)
-                elif prog >= m2_start:
-                    span = 1.0 - m2_start if m2_start < 0.999 else 1e-6
-                    ramp = 1.0 - ((prog - m2_start) / span)
-                    val = val_base * np.clip(ramp, 0.0, 1.0)
-                else:
-                    val = val_base
-            else:
-                val = val_base
+            val = compute_glitch_val(f, prog)
 
             strand = max(1, strand_val // 2)
 
