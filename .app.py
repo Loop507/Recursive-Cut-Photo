@@ -1380,24 +1380,35 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     def apply_calderone_split(raw_frame, f):
         """Se lo split statico Calderone 1/2 è attivo, taglia raw_frame in due metà fisse:
         una resta il Calderone 1 (con tutti gli effetti già applicati), l'altra viene
-        sostituita con una foto del Calderone 2 pulita (cover-crop, senza glitch),
-        pescata alla velocità dedicata calderone2_cfg['speed']."""
+        sostituita con una foto del Calderone 2 (cover-crop), pescata alla velocità
+        dedicata calderone2_cfg['speed']. Se 'apply_glitch' è attivo, applica anche a
+        questa metà lo stesso trattamento Chaos/Strand/Geometria del Calderone 1
+        (intensità base da Chaos, non audio-reattiva, per restare indipendente dal
+        resto del frame)."""
         if not (calderone2_cfg and calderone2_cfg.get('split_on') and pool_imgs2):
             return raw_frame
         rh, rw = raw_frame.shape[:2]
         pct = calderone2_cfg.get('split_pct', 0.5)
         img2 = pick2(f)
         out = raw_frame.copy()
+
+        def _maybe_glitch(patch, ph, pw):
+            if calderone2_cfg.get('apply_glitch'):
+                return apply_glitch_stripes(patch, patch, ph, pw, orientation, strand_val, rand_lines, c_n)
+            return patch
+
         if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
             split_x = int(rw * pct)
             if split_x < rw:
-                patch = cover_crop(img2, rw - split_x, rh)
-                out[:, split_x:rw] = patch
+                pw = rw - split_x
+                patch = cover_crop(img2, pw, rh)
+                out[:, split_x:rw] = _maybe_glitch(patch, rh, pw)
         else:
             split_y = int(rh * pct)
             if split_y < rh:
-                patch = cover_crop(img2, rw, rh - split_y)
-                out[split_y:rh, :] = patch
+                ph = rh - split_y
+                patch = cover_crop(img2, rw, ph)
+                out[split_y:rh, :] = _maybe_glitch(patch, ph, rw)
         return out
 
     def _finalize(raw_frame, f, t):
@@ -1895,7 +1906,7 @@ with c1:
              "(stesse impostazioni di Chaos/Speed/Geometria). Si mescola gradualmente col Calderone 1 "
              "dal punto che imposti sotto — stesso meccanismo di dissolvenza di Master 1/2.")
     calderone2_cfg = {'files': None, 'mix_from': 0.5, 'speed': 6, 'split_on': False,
-                       'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5}
+                       'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5, 'apply_glitch': False}
     if calderone2_on:
         calderone2_cfg['files'] = st.file_uploader("Foto — Calderone 2", type=["jpg","png","jpeg"],
             accept_multiple_files=True, key="calderone2_files")
@@ -1921,6 +1932,11 @@ with c1:
                 key="calderone2_split_pct",
                 help="Percentuale di frame occupata dal Calderone 1 (sinistra o alto); "
                      "il resto va al Calderone 2.") / 100.0
+            calderone2_cfg['apply_glitch'] = st.toggle(
+                "🌀 Applica anche al Calderone 2 gli stessi effetti Chaos/Strand", value=False,
+                key="calderone2_apply_glitch",
+                help="Se attivo, la metà del Calderone 2 riceve lo stesso trattamento glitch "
+                     "(Geometria + Chaos + Strand) del Calderone 1, invece di restare una foto pulita.")
         st.divider()
 
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
