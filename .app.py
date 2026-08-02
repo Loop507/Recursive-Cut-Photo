@@ -434,7 +434,6 @@ def draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw):
     for s in stripes:
         s_orient = s.get('orientation', stripe_orientation)
         VIOLET = np.array([120, 80, 220])
-        DARK_V = np.array([80, 40, 200])
 
         if s_orient == "Orizzontale":
             off = s.get('offset_length', 50.0)
@@ -1144,22 +1143,33 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             cache_keys_order2.append(key)
         cached_picks2[key] = val
 
+    _pick2_frame_memo = {'f': None, 'val': None}
+
     def pick2(cur_f):
         """Pesca dal Calderone 2 puro (non mixato col tempo) — per le strisce che lo
         scelgono esplicitamente come sorgente, indipendentemente dal Calderone 1/sfondo.
         Stessa cadenza di pick(): stesso intervallo, stesso 10% di jitter sulla cache,
-        stesso 'force' da beat quando 'segui il ritmo' è attivo."""
+        stesso 'force' da beat quando 'segui il ritmo' è attivo.
+        Memoizzata per singolo frame: se richiamata più volte con lo stesso cur_f (es.
+        striscia con source='Calderone 2' + split statico attivi insieme), restituisce
+        sempre la stessa foto invece di rischiare un doppio ripescaggio jitter."""
+        if _pick2_frame_memo['f'] == cur_f:
+            return _pick2_frame_memo['val']
         if not pool_imgs2:
-            return pool_imgs[0]
-        _speed2 = (calderone2_cfg or {}).get('speed', photo_speed)
-        interval = max(1, int(fps / _speed2))
-        key = cur_f // interval
-        force = beat_sync and onset_envelope[cur_f] > 0 and random.random() < (bc / 100.0) * onset_envelope[cur_f]
-        if key in cached_picks2 and not force and random.random() > 0.1:
-            return cached_picks2[key]
-        idx = (key % len(pool_imgs2)) if seq_mode else None
-        res = pool_imgs2[idx] if seq_mode else random.choice(pool_imgs2)
-        cache_set2(key, res)
+            res = pool_imgs[0]
+        else:
+            _speed2 = (calderone2_cfg or {}).get('speed', photo_speed)
+            interval = max(1, int(fps / _speed2))
+            key = cur_f // interval
+            force = beat_sync and onset_envelope[cur_f] > 0 and random.random() < (bc / 100.0) * onset_envelope[cur_f]
+            if key in cached_picks2 and not force and random.random() > 0.1:
+                res = cached_picks2[key]
+            else:
+                idx = (key % len(pool_imgs2)) if seq_mode else None
+                res = pool_imgs2[idx] if seq_mode else random.choice(pool_imgs2)
+                cache_set2(key, res)
+        _pick2_frame_memo['f'] = cur_f
+        _pick2_frame_memo['val'] = res
         return res
 
     # --- FOTO/VIDEO SFONDO: sempre preparati entrambi se caricati, indipendentemente da quale
@@ -1429,13 +1439,13 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             split_x = int(rw * pct)
             if split_x < rw:
                 pw = rw - split_x
-                patch = cover_crop(img2, pw, rh)
+                patch = cv2.resize(cover_crop(img2, pw, rh), (pw, rh))
                 out[:, split_x:rw] = _maybe_glitch(patch, rh, pw)
         else:
             split_y = int(rh * pct)
             if split_y < rh:
                 ph = rh - split_y
-                patch = cover_crop(img2, rw, ph)
+                patch = cv2.resize(cover_crop(img2, rw, ph), (rw, ph))
                 out[split_y:rh, :] = _maybe_glitch(patch, ph, rw)
         return out
 
