@@ -1151,7 +1151,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         stesso 'force' da beat quando 'segui il ritmo' è attivo."""
         if not pool_imgs2:
             return pool_imgs[0]
-        interval = max(1, int(fps / photo_speed))
+        _speed2 = (calderone2_cfg or {}).get('speed', photo_speed)
+        interval = max(1, int(fps / _speed2))
         key = cur_f // interval
         force = beat_sync and onset_envelope[cur_f] > 0 and random.random() < (bc / 100.0) * onset_envelope[cur_f]
         if key in cached_picks2 and not force and random.random() > 0.1:
@@ -1376,7 +1377,31 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     ev = int(75 * (1 - c_n) + 2)
 
     # --- finalizzazione frame: overlay foto/video sopra lo sfondo, poi resize export ---
+    def apply_calderone_split(raw_frame, f):
+        """Se lo split statico Calderone 1/2 è attivo, taglia raw_frame in due metà fisse:
+        una resta il Calderone 1 (con tutti gli effetti già applicati), l'altra viene
+        sostituita con una foto del Calderone 2 pulita (cover-crop, senza glitch),
+        pescata alla velocità dedicata calderone2_cfg['speed']."""
+        if not (calderone2_cfg and calderone2_cfg.get('split_on') and pool_imgs2):
+            return raw_frame
+        rh, rw = raw_frame.shape[:2]
+        pct = calderone2_cfg.get('split_pct', 0.5)
+        img2 = pick2(f)
+        out = raw_frame.copy()
+        if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
+            split_x = int(rw * pct)
+            if split_x < rw:
+                patch = cover_crop(img2, rw - split_x, rh)
+                out[:, split_x:rw] = patch
+        else:
+            split_y = int(rh * pct)
+            if split_y < rh:
+                patch = cover_crop(img2, rw, rh - split_y)
+                out[split_y:rh, :] = patch
+        return out
+
     def _finalize(raw_frame, f, t):
+        raw_frame = apply_calderone_split(raw_frame, f)
         if overlays_prepared:
             # canvas = dimensioni REALI del frame corrente, non h/w fissi: img_m1/img_m2
             # sono a piena risoluzione (out_w x out_h), mentre il resto della pipeline
@@ -1866,14 +1891,33 @@ with c1:
         help="Un secondo pool di foto, con lo STESSO trattamento glitch del Calderone principale "
              "(stesse impostazioni di Chaos/Speed/Geometria). Si mescola gradualmente col Calderone 1 "
              "dal punto che imposti sotto — stesso meccanismo di dissolvenza di Master 1/2.")
-    calderone2_cfg = {'files': None, 'mix_from': 0.5}
+    calderone2_cfg = {'files': None, 'mix_from': 0.5, 'speed': 6, 'split_on': False,
+                       'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5}
     if calderone2_on:
         calderone2_cfg['files'] = st.file_uploader("Foto — Calderone 2", type=["jpg","png","jpeg"],
             accept_multiple_files=True, key="calderone2_files")
+        calderone2_cfg['speed'] = st.slider("⚡ Photo Speed Calderone 2 (fps)", 1, 24, 6,
+            key="calderone2_speed",
+            help="Velocità di cambio-foto del Calderone 2, indipendente dal Photo Speed "
+                 "del Calderone 1 qui sotto.")
         calderone2_cfg['mix_from'] = st.slider("Calderone 2 subentra da (%)", 0, 100, 50,
             key="calderone2_mix_from",
             help="Prima di questo punto si vede solo il Calderone 1. Dopo, la probabilità di "
                  "pescare dal Calderone 2 cresce gradualmente fino al 100%.") / 100.0
+        st.caption("✂️ Split statico (in alternativa/aggiunta al mix graduale sopra)")
+        calderone2_cfg['split_on'] = st.toggle("Dividi il frame Calderone 1 / Calderone 2", value=False,
+            key="calderone2_split_on",
+            help="Taglia il frame in due metà fisse: una mostra il Calderone 1 (con tutti i suoi "
+                 "effetti/glitch), l'altra mostra il Calderone 2 pulito. Si applica sopra qualunque "
+                 "modalità (Nessun Effetto, Orizzontale, Strisce...).")
+        if calderone2_cfg['split_on']:
+            calderone2_cfg['split_orient'] = st.radio("Direzione split", 
+                ["Verticale (sx/dx)", "Orizzontale (alto/basso)"],
+                horizontal=True, key="calderone2_split_orient")
+            calderone2_cfg['split_pct'] = st.slider("Quota Calderone 1 (%)", 0, 100, 50,
+                key="calderone2_split_pct",
+                help="Percentuale di frame occupata dal Calderone 1 (sinistra o alto); "
+                     "il resto va al Calderone 2.") / 100.0
         st.divider()
 
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
