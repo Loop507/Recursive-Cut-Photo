@@ -1130,16 +1130,36 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         ramp = np.clip((prog - calderone2_mix_from) / span, 0.0, 1.0)
         return pool_imgs2 if random.random() < ramp else pool_imgs
 
+    # Cache dedicata al Calderone 2, con la STESSA identica logica di jitter/beat-sync
+    # di cache_set/cached_picks usate da pick() più avanti — cosi' le due pentole
+    # cambiano foto alla stessa velocita' percepita (sia a tempo di musica che no).
+    cached_picks2 = {}
+    cache_keys_order2 = []
+
+    def cache_set2(key, val):
+        if key not in cached_picks2:
+            if len(cache_keys_order2) >= MAX_CACHE:
+                old = cache_keys_order2.pop(0)
+                cached_picks2.pop(old, None)
+            cache_keys_order2.append(key)
+        cached_picks2[key] = val
+
     def pick2(cur_f):
         """Pesca dal Calderone 2 puro (non mixato col tempo) — per le strisce che lo
-        scelgono esplicitamente come sorgente, indipendentemente dal Calderone 1/sfondo."""
+        scelgono esplicitamente come sorgente, indipendentemente dal Calderone 1/sfondo.
+        Stessa cadenza di pick(): stesso intervallo, stesso 10% di jitter sulla cache,
+        stesso 'force' da beat quando 'segui il ritmo' è attivo."""
         if not pool_imgs2:
             return pool_imgs[0]
         interval = max(1, int(fps / photo_speed))
         key = cur_f // interval
-        if seq_mode:
-            return pool_imgs2[key % len(pool_imgs2)]
-        return random.Random(key).choice(pool_imgs2)
+        force = beat_sync and onset_envelope[cur_f] > 0 and random.random() < (bc / 100.0) * onset_envelope[cur_f]
+        if key in cached_picks2 and not force and random.random() > 0.1:
+            return cached_picks2[key]
+        idx = (key % len(pool_imgs2)) if seq_mode else None
+        res = pool_imgs2[idx] if seq_mode else random.choice(pool_imgs2)
+        cache_set2(key, res)
+        return res
 
     # --- FOTO/VIDEO SFONDO: sempre preparati entrambi se caricati, indipendentemente da quale
     # sia il predefinito (bg_source) — così ogni striscia può scegliere liberamente tra tutto. ---
