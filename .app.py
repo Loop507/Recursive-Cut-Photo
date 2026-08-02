@@ -1885,6 +1885,9 @@ with c1:
         up_m2 = st.file_uploader("MASTER 2 — fine",   type=["jpg","png","jpeg"])
         st.divider()
     up_t = st.file_uploader("CALDERONE", type=["jpg","png","jpeg"], accept_multiple_files=True)
+    speed = st.slider("⚡ Photo Speed Calderone 1 (fps)", 1, 24, 6, key="speed_calderone1",
+        help="Velocità di cambio-foto del Calderone 1, indipendente dal Photo Speed "
+             "del Calderone 2 qui sotto.")
     st.divider()
 
     calderone2_on = st.toggle("🖇️ Calderone 2", value=False, key="calderone2_on",
@@ -2494,7 +2497,6 @@ with c2:
             st.caption("⚠️ Carica entrambi i Master per attivare la transizione.")
 
     chaos  = st.slider("🌀 Chaos", 0, 100, 50)
-    speed  = st.slider("⚡ Photo Speed (fps)", 1, 24, 6)
     lines  = st.slider("📐 Strand (px)", 1, 500, 45)
     rand_l = st.toggle("Dynamic Slicing", value=True)
     mode   = st.radio("Geometria", ["Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Nessun Effetto"])
