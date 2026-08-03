@@ -1118,10 +1118,12 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             calderone2_mix_from = calderone2_cfg.get('mix_from', 0.5)
 
     def pick_calderone_pool(prog):
-        """Se il Calderone 2 è configurato, sfuma gradualmente dal pool 1 al pool 2
-        dopo 'calderone2_mix_from' (stesso meccanismo di dissolvenza di Master1/2).
-        Altrimenti resta sempre sul pool 1 — comportamento originale invariato."""
-        if not pool_imgs2:
+        """Se il Calderone 2 è configurato E il mix graduale è attivo, sfuma dal pool 1
+        al pool 2 dopo 'calderone2_mix_from' (stesso meccanismo di dissolvenza di Master1/2).
+        Se il mix è disattivato (default): resta sempre sul pool 1 — così i due Calderoni
+        restano entrambi presenti come configurati altrove (es. split), senza che uno
+        sostituisca l'altro nel tempo."""
+        if not pool_imgs2 or not (calderone2_cfg and calderone2_cfg.get('mix_enabled')):
             return pool_imgs
         if prog < calderone2_mix_from:
             return pool_imgs
@@ -1366,6 +1368,22 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             else:
                 stripe_offsets_t.append(np.full(total_f, 50.0))
 
+    # --- traiettoria split statico Calderone 1/2 (indipendente dalle strisce:
+    # stesso schema di drift sinusoidale, ma calcolata a parte con un seed dedicato) ---
+    calderone_split_traj = None
+    if calderone2_cfg and calderone2_cfg.get('split_on') and calderone2_cfg.get('split_move_random'):
+        _cs_t_arr = np.linspace(0, max_limit, total_f)
+        _cs_react = bool(calderone2_cfg.get('split_beat_react', False)) and beat_sync and not slideshow_mode
+        _cs_base_t = beat_phase if _cs_react else _cs_t_arr
+        _cs_rng = np.random.default_rng(9001)
+        _cs_spd = max(0.1, calderone2_cfg.get('split_move_speed', 1.0))
+        _cs_freq1 = _cs_spd * _cs_rng.uniform(0.1, 0.3)
+        _cs_freq2 = _cs_spd * _cs_rng.uniform(0.05, 0.15)
+        _cs_phase1, _cs_phase2 = _cs_rng.uniform(0, np.pi*2, 2)
+        _cs_traj = (np.sin(2*np.pi*_cs_freq1*_cs_base_t + _cs_phase1) * 0.5 +
+                    np.sin(2*np.pi*_cs_freq2*_cs_base_t + _cs_phase2) * 0.5)
+        calderone_split_traj = (_cs_traj + 1) / 2 * 80 + 10  # oscilla nel range 10%-90%
+
 
     # --- CACHE ---
     MAX_CACHE = 400
@@ -1424,7 +1442,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         if not (calderone2_cfg and calderone2_cfg.get('split_on') and pool_imgs2):
             return raw_frame
         rh, rw = raw_frame.shape[:2]
-        pct = calderone2_cfg.get('split_pct', 0.5)
+        pct = (calderone_split_traj[f] / 100.0) if calderone_split_traj is not None \
+              else calderone2_cfg.get('split_pct', 0.5)
         img2 = pick2(f)
         out = raw_frame.copy()
 
@@ -1920,8 +1939,10 @@ with c1:
         help="Un secondo pool di foto, con lo STESSO trattamento glitch del Calderone principale "
              "(stesse impostazioni di Chaos/Speed/Geometria). Si mescola gradualmente col Calderone 1 "
              "dal punto che imposti sotto — stesso meccanismo di dissolvenza di Master 1/2.")
-    calderone2_cfg = {'files': None, 'mix_from': 0.5, 'speed': 6, 'split_on': False,
-                       'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5, 'apply_glitch': False}
+    calderone2_cfg = {'files': None, 'mix_from': 0.5, 'mix_enabled': False, 'speed': 6,
+                       'split_on': False, 'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5,
+                       'split_move_random': False, 'split_move_speed': 1.0, 'split_beat_react': False,
+                       'apply_glitch': False}
     if calderone2_on:
         calderone2_cfg['files'] = st.file_uploader("Foto — Calderone 2", type=["jpg","png","jpeg"],
             accept_multiple_files=True, key="calderone2_files")
@@ -1929,11 +1950,18 @@ with c1:
             key="calderone2_speed",
             help="Velocità di cambio-foto del Calderone 2, indipendente dal Photo Speed "
                  "del Calderone 1 qui sotto.")
-        calderone2_cfg['mix_from'] = st.slider("Calderone 2 subentra da (%)", 0, 100, 50,
-            key="calderone2_mix_from",
-            help="Prima di questo punto si vede solo il Calderone 1. Dopo, la probabilità di "
-                 "pescare dal Calderone 2 cresce gradualmente fino al 100%.") / 100.0
-        st.caption("✂️ Split statico (in alternativa/aggiunta al mix graduale sopra)")
+        calderone2_cfg['mix_enabled'] = st.toggle("🔀 Mix graduale nel tempo (Calderone 1 → Calderone 2)",
+            value=False, key="calderone2_mix_enabled",
+            help="Se spento (default): il Calderone 2 non sostituisce mai il Calderone 1 nello "
+                 "sfondo — restano entrambi sempre presenti come li configuri (es. con lo split "
+                 "qui sotto). Se acceso: nel tempo il Calderone 1 viene gradualmente sostituito "
+                 "dal Calderone 2 nello sfondo, a partire dal punto scelto sotto.")
+        if calderone2_cfg['mix_enabled']:
+            calderone2_cfg['mix_from'] = st.slider("Calderone 2 subentra da (%)", 0, 100, 50,
+                key="calderone2_mix_from",
+                help="Prima di questo punto si vede solo il Calderone 1. Dopo, la probabilità di "
+                     "pescare dal Calderone 2 cresce gradualmente fino al 100%.") / 100.0
+        st.caption("✂️ Split statico (in alternativa al mix graduale sopra — mostra entrambi insieme)")
         calderone2_cfg['split_on'] = st.toggle("Dividi il frame Calderone 1 / Calderone 2", value=False,
             key="calderone2_split_on",
             help="Taglia il frame in due metà fisse: una mostra il Calderone 1 (con tutti i suoi "
@@ -1946,7 +1974,21 @@ with c1:
             calderone2_cfg['split_pct'] = st.slider("Quota Calderone 1 (%)", 0, 100, 50,
                 key="calderone2_split_pct",
                 help="Percentuale di frame occupata dal Calderone 1 (sinistra o alto); "
-                     "il resto va al Calderone 2.") / 100.0
+                     "il resto va al Calderone 2. Se 'Movimento random' qui sotto è spento, "
+                     "questo valore resta fisso per tutto il video.") / 100.0
+            calderone2_cfg['split_move_random'] = st.toggle("Movimento random (split)", value=False,
+                key="calderone2_split_move_random",
+                help="Fa scivolare nel tempo il confine tra i due Calderoni, invece di lasciarlo "
+                     "fisso alla Quota impostata sopra.")
+            if calderone2_cfg['split_move_random']:
+                calderone2_cfg['split_move_speed'] = st.slider("Velocità movimento (split)", 0.1, 5.0, 1.0,
+                    step=0.1, key="calderone2_split_move_speed")
+                calderone2_cfg['split_beat_react'] = st.toggle("🎵 Sincronizza al beat (split)", value=False,
+                    key="calderone2_split_beat_react",
+                    help="Il movimento del confine segue l'orologio musicale (beat) invece del tempo reale.")
+            else:
+                calderone2_cfg['split_move_speed'] = 1.0
+                calderone2_cfg['split_beat_react'] = False
             calderone2_cfg['apply_glitch'] = st.toggle(
                 "🌀 Applica anche al Calderone 2 gli stessi effetti Chaos/Strand", value=False,
                 key="calderone2_apply_glitch",
@@ -2492,6 +2534,29 @@ with bottom_container:
                 _capt += " · viola = striscia attiva"
                 if stripe_reverse:
                     _capt += " · REVERSE ON"
+
+            if calderone2_cfg and calderone2_cfg.get('split_on') and calderone2_cfg.get('files'):
+                _c2_prev_file = calderone2_cfg['files'][0]
+                _c2_prev_file.seek(0)
+                _c2_prev_img = np.array(Image.open(_c2_prev_file).convert("RGB"))
+                _pct = calderone2_cfg.get('split_pct', 0.5)
+                if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
+                    _sx = int(pdw * _pct)
+                    if 0 < _sx < pdw:
+                        _pw2 = pdw - _sx
+                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, _pw2, pdh), (_pw2, pdh))
+                        preview_out[:, _sx:pdw] = _patch2
+                        preview_out[:, max(0, _sx - 1):_sx + 1] = [255, 220, 0]
+                else:
+                    _sy = int(pdh * _pct)
+                    if 0 < _sy < pdh:
+                        _ph2 = pdh - _sy
+                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, pdw, _ph2), (pdw, _ph2))
+                        preview_out[_sy:pdh, :] = _patch2
+                        preview_out[max(0, _sy - 1):_sy + 1, :] = [255, 220, 0]
+                _capt += " · giallo = confine Calderone 1/2"
+                if calderone2_cfg.get('split_move_random'):
+                    _capt += " (si muove nel render)"
 
             if overlay_panel_on and overlays_cfg:
                 _ov_preview = []
