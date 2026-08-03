@@ -175,7 +175,7 @@ def kf_expander_ui(stripe_id, dur, params_meta, prefix="stripe", label="Keyframe
     return kf_state
 
 
-def resize_to_format(img, format_type, half_res=False):
+def resize_to_format(img, format_type, half_res=False, pan_x=0.5, pan_y=0.5, zoom=1.0):
     if format_type == "16:9 (Orizzontale)": target_w, target_h = 1280, 720
     elif format_type == "9:16 (Verticale)":  target_w, target_h = 720, 1280
     else:                                     target_w, target_h = 1080, 1080
@@ -184,13 +184,16 @@ def resize_to_format(img, format_type, half_res=False):
     h, w = img.shape[:2]
     aspect_target = target_w / target_h
     aspect_img = w / h
+    zoom = max(1.0, zoom)  # zoom<1 richiederebbe padding: non supportato, si resta almeno a 'fit'
     if aspect_img > aspect_target:
-        new_w = int(h * aspect_target)
-        start_x = (w - new_w) // 2
+        new_w = min(w, max(1, int(h * aspect_target / zoom)))
+        max_start_x = w - new_w
+        start_x = int(max_start_x * min(max(pan_x, 0.0), 1.0))
         img = img[:, start_x:start_x+new_w]
     else:
-        new_h = int(w / aspect_target)
-        start_y = (h - new_h) // 2
+        new_h = min(h, max(1, int(w / aspect_target / zoom)))
+        max_start_y = h - new_h
+        start_y = int(max_start_y * min(max(pan_y, 0.0), 1.0))
         img = img[start_y:start_y+new_h, :]
     return cv2.resize(img, (target_w, target_h))
 
@@ -294,20 +297,24 @@ def blend_patch(base, top, mode, opacity):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-def cover_crop(img_rgba, target_w, target_h):
-    """Ritaglia (center-crop) l'immagine per adattarla all'aspect ratio del canvas —
-    stessa logica di resize_to_format usata dal Calderone: riempie tutto il formato,
-    nessuna barra vuota, tagliando i bordi in eccesso invece di rimpicciolire."""
+def cover_crop(img_rgba, target_w, target_h, pan_x=0.5, pan_y=0.5, zoom=1.0):
+    """Ritaglia (center-crop, o pan/zoom se specificati) l'immagine per adattarla
+    all'aspect ratio del canvas — stessa logica di resize_to_format usata dal
+    Calderone: riempie tutto il formato, nessuna barra vuota, tagliando i bordi
+    in eccesso invece di rimpicciolire."""
     ih, iw = img_rgba.shape[:2]
     aspect_target = target_w / target_h
     aspect_img = iw / ih
+    zoom = max(1.0, zoom)
     if aspect_img > aspect_target:
-        new_w = max(1, int(ih * aspect_target))
-        start_x = (iw - new_w) // 2
+        new_w = min(iw, max(1, int(ih * aspect_target / zoom)))
+        max_start_x = iw - new_w
+        start_x = int(max_start_x * min(max(pan_x, 0.0), 1.0))
         img_rgba = img_rgba[:, start_x:start_x + new_w]
     else:
-        new_h = max(1, int(iw / aspect_target))
-        start_y = (ih - new_h) // 2
+        new_h = min(ih, max(1, int(iw / aspect_target / zoom)))
+        max_start_y = ih - new_h
+        start_y = int(max_start_y * min(max(pan_y, 0.0), 1.0))
         img_rgba = img_rgba[start_y:start_y + new_h, :]
     return img_rgba
 
@@ -1079,7 +1086,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     global_chroma=False, global_chroma_amt=6,
                     global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
                     manual_bpm=None, onset_sensitivity=None,
-                    calderone2_cfg=None,
+                    calderone2_cfg=None, calderone1_cfg=None,
                     bg_source="Calderone (originale)", bg_static_file=None, bg_video_file=None,
                     overlays_cfg=None,
                     mod_lab_on=False, mod_lab_amount=0.30):
@@ -1095,13 +1102,18 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     def load_img_full(f):
         f.seek(0)
         return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=False)
-    def load_img_half(f):
+    def load_img_half(f, pan_x=0.5, pan_y=0.5, zoom=1.0):
         f.seek(0)
-        return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True)
+        return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True,
+                                 pan_x=pan_x, pan_y=pan_y, zoom=zoom)
+
+    _c1_pan_x = (calderone1_cfg or {}).get('pan_x', 0.5)
+    _c1_pan_y = (calderone1_cfg or {}).get('pan_y', 0.5)
+    _c1_zoom  = (calderone1_cfg or {}).get('zoom', 1.0)
 
     img_m1 = load_img_full(up_m1) if up_m1 else None
     img_m2 = load_img_full(up_m2) if up_m2 else None
-    pool_imgs = [load_img_half(f) for f in up_trit] if up_trit else []
+    pool_imgs = [load_img_half(f, _c1_pan_x, _c1_pan_y, _c1_zoom) for f in up_trit] if up_trit else []
     if not pool_imgs:
         pool_imgs = [np.zeros((360, 640, 3), dtype=np.uint8)]
 
@@ -1114,7 +1126,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     if calderone2_cfg:
         _c2_files = calderone2_cfg.get('files') or []
         if _c2_files:
-            pool_imgs2 = [load_img_half(f) for f in _c2_files]
+            _c2_pan_x = calderone2_cfg.get('pan_x', 0.5)
+            _c2_pan_y = calderone2_cfg.get('pan_y', 0.5)
+            _c2_zoom  = calderone2_cfg.get('zoom', 1.0)
+            pool_imgs2 = [load_img_half(f, _c2_pan_x, _c2_pan_y, _c2_zoom) for f in _c2_files]
             calderone2_mix_from = calderone2_cfg.get('mix_from', 0.5)
 
     def pick_calderone_pool(prog):
@@ -1942,7 +1957,7 @@ with c1:
     calderone2_cfg = {'files': None, 'mix_from': 0.5, 'mix_enabled': False, 'speed': 6,
                        'split_on': False, 'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5,
                        'split_move_random': False, 'split_move_speed': 1.0, 'split_beat_react': False,
-                       'apply_glitch': False}
+                       'apply_glitch': False, 'pan_x': 0.5, 'pan_y': 0.5, 'zoom': 1.0}
     if calderone2_on:
         calderone2_cfg['files'] = st.file_uploader("Foto — Calderone 2", type=["jpg","png","jpeg"],
             accept_multiple_files=True, key="calderone2_files")
@@ -2475,10 +2490,27 @@ with bottom_container:
                 st.session_state.overlay_ids.remove(_to_delete_overlay)
                 st.rerun()
 
+        st.divider()
+        st.caption("🎯 Inquadratura Calderoni (posizione/zoom)")
+        calderone1_cfg = {'pan_x': 0.5, 'pan_y': 0.5, 'zoom': 1.0}
+        with st.expander("Calderone 1", expanded=False):
+            calderone1_cfg['pan_x'] = st.slider("Posizione X (%)", 0, 100, 50, key="c1_pan_x",
+                help="0 = tutto a sinistra, 50 = centrato, 100 = tutto a destra.") / 100.0
+            calderone1_cfg['pan_y'] = st.slider("Posizione Y (%)", 0, 100, 50, key="c1_pan_y",
+                help="0 = tutto in alto, 50 = centrato, 100 = tutto in basso.") / 100.0
+            calderone1_cfg['zoom'] = st.slider("Zoom", 1.0, 3.0, 1.0, step=0.05, key="c1_zoom",
+                help="1.0 = nessuno zoom (inquadratura piena). Più alto = più vicino.")
+        if calderone2_on:
+            with st.expander("Calderone 2", expanded=False):
+                calderone2_cfg['pan_x'] = st.slider("Posizione X (%)", 0, 100, 50, key="c2_pan_x") / 100.0
+                calderone2_cfg['pan_y'] = st.slider("Posizione Y (%)", 0, 100, 50, key="c2_pan_y") / 100.0
+                calderone2_cfg['zoom'] = st.slider("Zoom", 1.0, 3.0, 1.0, step=0.05, key="c2_zoom")
+
     with preview_slot:
         st.caption("🔍 Anteprima")
 
         prev_img_full = None
+        prev_sel = None
 
         if bg_static_file:
             bg_static_file.seek(0)
@@ -2521,7 +2553,11 @@ with bottom_container:
                          "1:1 (Quadrato)":    (1080, 1080)}
             _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
             st.caption(f"Formato: {fmt_value}")
-            prev_img_cropped = cover_crop(prev_img_full, _fw, _fh)  # stesso ritaglio del render
+            if prev_sel == "Prima foto Calderone":
+                prev_img_cropped = cover_crop(prev_img_full, _fw, _fh,
+                    calderone1_cfg['pan_x'], calderone1_cfg['pan_y'], calderone1_cfg['zoom'])
+            else:
+                prev_img_cropped = cover_crop(prev_img_full, _fw, _fh)  # stesso ritaglio del render
 
             ph, pw   = prev_img_cropped.shape[:2]
             pscale   = 190 / max(ph, pw)  # anteprima compatta
@@ -2540,18 +2576,21 @@ with bottom_container:
                 _c2_prev_file.seek(0)
                 _c2_prev_img = np.array(Image.open(_c2_prev_file).convert("RGB"))
                 _pct = calderone2_cfg.get('split_pct', 0.5)
+                _c2_px = calderone2_cfg.get('pan_x', 0.5)
+                _c2_py = calderone2_cfg.get('pan_y', 0.5)
+                _c2_z  = calderone2_cfg.get('zoom', 1.0)
                 if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
                     _sx = int(pdw * _pct)
                     if 0 < _sx < pdw:
                         _pw2 = pdw - _sx
-                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, _pw2, pdh), (_pw2, pdh))
+                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, _pw2, pdh, _c2_px, _c2_py, _c2_z), (_pw2, pdh))
                         preview_out[:, _sx:pdw] = _patch2
                         preview_out[:, max(0, _sx - 1):_sx + 1] = [255, 220, 0]
                 else:
                     _sy = int(pdh * _pct)
                     if 0 < _sy < pdh:
                         _ph2 = pdh - _sy
-                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, pdw, _ph2), (pdw, _ph2))
+                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, pdw, _ph2, _c2_px, _c2_py, _c2_z), (pdw, _ph2))
                         preview_out[_sy:pdh, :] = _patch2
                         preview_out[max(0, _sy - 1):_sy + 1, :] = [255, 220, 0]
                 _capt += " · giallo = confine Calderone 1/2"
@@ -2760,7 +2799,7 @@ with c3:
             global_chroma, global_chroma_amt,
             global_flash, global_flash_threshold, global_flash_intensity,
             manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity,
-            calderone2_cfg=calderone2_cfg,
+            calderone2_cfg=calderone2_cfg, calderone1_cfg=calderone1_cfg,
             bg_source=bg_source, bg_static_file=bg_static_file, bg_video_file=bg_video_file,
             overlays_cfg=overlays_cfg,
             mod_lab_on=mod_lab_on, mod_lab_amount=mod_lab_amount
