@@ -2554,8 +2554,8 @@ with bottom_container:
             _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
             st.caption(f"Formato: {fmt_value}")
             if prev_sel == "Prima foto Calderone":
-                prev_img_cropped = cover_crop(prev_img_full, _fw, _fh,
-                    calderone1_cfg['pan_x'], calderone1_cfg['pan_y'], calderone1_cfg['zoom'])
+                prev_img_cropped = cv2.resize(cover_crop(prev_img_full, _fw, _fh,
+                    calderone1_cfg['pan_x'], calderone1_cfg['pan_y'], calderone1_cfg['zoom']), (_fw, _fh))
             else:
                 prev_img_cropped = cover_crop(prev_img_full, _fw, _fh)  # stesso ritaglio del render
 
