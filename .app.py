@@ -1196,7 +1196,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             interval = max(1, int(fps / _speed2))
             key = cur_f // interval
             force = beat_sync and onset_envelope[cur_f] > 0 and random.random() < (bc / 100.0) * onset_envelope[cur_f]
-            if key in cached_picks2 and not force and random.random() > 0.1:
+            if key in cached_picks2 and not force:
                 res = cached_picks2[key]
             else:
                 idx = (key % len(pool_imgs2)) if seq_mode else None
@@ -1624,7 +1624,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     _m1_prob = 1.0 - _ramp_m1
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
-                        if key in cached_picks and random.random() > 0.1:
+                        if key in cached_picks:
                             return cached_picks[key]
                         if random.random() < _m1_prob:
                             res = img_m1_half
@@ -1642,7 +1642,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     _m2_prob = _ramp_m2
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
-                        if key in cached_picks and random.random() > 0.1:
+                        if key in cached_picks:
                             return cached_picks[key]
                         if random.random() < _m2_prob:
                             res = img_m2_half
@@ -1657,7 +1657,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         interval = max(1, int(fps / photo_speed))
                         key = f // interval
                         force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
-                        if key in cached_picks and not force and random.random() > 0.1:
+                        if key in cached_picks and not force:
                             return cached_picks[key]
                         _active_pool = pick_calderone_pool(prog)
                         idx = (key % len(_active_pool)) if seq_mode else None
@@ -1673,7 +1673,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     interval = max(1, int(fps / speed_mod))
                     key = f // interval
                     force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
-                    if key in cached_picks and not force and random.random() > 0.1:
+                    if key in cached_picks and not force:
                         return cached_picks[key]
                     _active_pool = pick_calderone_pool(prog)
                     idx = (key % len(_active_pool)) if seq_mode else None
@@ -1869,7 +1869,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     stripe_info_it = ""
     stripe_info_en = ""
     if stripe_mode and stripes:
-        bg_label = "Frame" if stripe_bg == "Calderone" else stripe_bg
+        bg_label = "Calderone animato (Chaos/Geometria)" if stripe_bg == "Render" else "Foto statica pulita"
         stripe_info_it = f"""
 * STRISCE SELETTIVE: {len(stripes)} striscia/e ({stripe_orientation})
 * Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
@@ -2075,14 +2075,19 @@ with bottom_container:
                 ["Orizzontale", "Verticale", "Mix H+V"], horizontal=True, key="stripe_orientation_g",
                 help="Mix H+V: strisce pari=orizzontali, dispari=verticali")
 
-            # sfondo esterno alle strisce: fissato su "Calderone" (comportamento standard).
-            # La scelta Sfondo/Foto Fissa/Video è quella in Assets, non serve sceglierlo due volte qui.
-            stripe_bg = "Calderone"
+            # Sfondo esterno alle strisce: scelta Sfondo/Foto Fissa/Video è quella in Assets,
+            # non serve sceglierlo due volte qui. Quello che invece si sceglie qui è se lo
+            # sfondo mostra il Calderone "animato" (Chaos/Geometria, incluse Bande Temporali)
+            # oppure una foto statica pulita — indipendentemente da cosa fa la striscia.
+            stripe_bg_use_render = st.toggle("🌀 Sfondo con effetto Calderone", value=True, key="stripe_bg_render_g",
+                help="ON = lo sfondo fuori dalle strisce mostra il Calderone con Chaos/Geometria "
+                     "applicati (come quando le strisce sono spente). OFF = sfondo foto pulita statica.")
+            stripe_bg = "Render" if stripe_bg_use_render else "Calderone"
 
             col_tog1, col_tog2 = st.columns(2)
             with col_tog1:
                 stripe_glitch = st.toggle("⚡ Striscia glitchata", value=False, key="stripe_glitch_g",
-                    help="OFF = striscia pulita. ON = glitchata.")
+                    help="OFF = striscia pulita. ON = glitchata — indipendente dallo sfondo qui sopra.")
             with col_tog2:
                 stripe_reverse = st.toggle("🔄 Reverse", value=False, key="stripe_reverse_g",
                     help="Inverte: strisce ferme, tutto il resto Calderone.")
@@ -2418,7 +2423,7 @@ with bottom_container:
                         if "stripe_orientation" in loaded:
                             st.session_state["stripe_orientation_g"] = loaded["stripe_orientation"]
                         if "stripe_bg" in loaded:
-                            st.session_state["stripe_bg_g"] = loaded["stripe_bg"]
+                            st.session_state["stripe_bg_render_g"] = (loaded["stripe_bg"] == "Render")
                         if "stripe_glitch" in loaded:
                             st.session_state["stripe_glitch_g"] = loaded["stripe_glitch"]
                         if "stripe_reverse" in loaded:
