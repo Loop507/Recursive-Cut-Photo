@@ -1447,18 +1447,19 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     # --- finalizzazione frame: overlay foto/video sopra lo sfondo, poi resize export ---
     def apply_calderone_split(raw_frame, f, t):
-        """Se lo split statico Calderone 1/2 è attivo, taglia raw_frame in due metà fisse:
-        una resta il Calderone 1 (con tutti gli effetti già applicati), l'altra viene
-        sostituita con una foto del Calderone 2 (cover-crop), pescata alla velocità
-        dedicata calderone2_cfg['speed']. Se 'apply_glitch' è attivo, applica anche a
-        questa metà lo stesso trattamento Chaos/Strand/Geometria del Calderone 1, con
-        la STESSA intensità audio/beat-reattiva (compute_glitch_val) — non più una
-        intensità fissa, cosi' la metà Calderone 2 "respira" col brano come il resto."""
+        """Se lo split statico Calderone 1/2 è attivo, sostituisce parte di raw_frame con
+        foto del Calderone 2 (cover-crop), pescate alla velocità dedicata calderone2_cfg['speed'].
+        Due modalità:
+        - '2 zone (metà/metà)': taglia il frame in due metà fisse con confine regolabile
+          (percentuale statica o in movimento).
+        - 'Griglia a scacchiera': divide il frame in righe×colonne e alterna Calderone 1
+          (frame originale) e Calderone 2 come una scacchiera.
+        Se 'apply_glitch' è attivo, applica anche alle zone Calderone 2 lo stesso trattamento
+        Chaos/Strand/Geometria del Calderone 1, con la STESSA intensità audio/beat-reattiva
+        (compute_glitch_val) — così quelle zone "respirano" col brano come il resto."""
         if not (calderone2_cfg and calderone2_cfg.get('split_on') and pool_imgs2):
             return raw_frame
         rh, rw = raw_frame.shape[:2]
-        pct = (calderone_split_traj[f] / 100.0) if calderone_split_traj is not None \
-              else calderone2_cfg.get('split_pct', 0.5)
         img2 = pick2(f)
         out = raw_frame.copy()
 
@@ -1469,6 +1470,29 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 return apply_glitch_stripes(patch, patch, ph, pw, orientation, strand_val, rand_lines, val2)
             return patch
 
+        if calderone2_cfg.get('split_mode') == 'Griglia a scacchiera':
+            rows = max(2, int(calderone2_cfg.get('grid_rows', 2)))
+            cols = max(2, int(calderone2_cfg.get('grid_cols', 2)))
+            for r in range(rows):
+                y0 = int(round(rh * r / rows))
+                y1 = int(round(rh * (r + 1) / rows))
+                ph = y1 - y0
+                if ph <= 0:
+                    continue
+                for c in range(cols):
+                    if (r + c) % 2 == 0:
+                        continue  # cella pari = Calderone 1 (resta il frame originale)
+                    x0 = int(round(rw * c / cols))
+                    x1 = int(round(rw * (c + 1) / cols))
+                    pw = x1 - x0
+                    if pw <= 0:
+                        continue
+                    patch = cv2.resize(cover_crop(img2, pw, ph), (pw, ph))
+                    out[y0:y1, x0:x1] = _maybe_glitch(patch, ph, pw)
+            return out
+
+        pct = (calderone_split_traj[f] / 100.0) if calderone_split_traj is not None \
+              else calderone2_cfg.get('split_pct', 0.5)
         if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
             split_x = int(rw * pct)
             if split_x < rw:
@@ -1955,8 +1979,10 @@ with c1:
              "(stesse impostazioni di Chaos/Speed/Geometria). Si mescola gradualmente col Calderone 1 "
              "dal punto che imposti sotto — stesso meccanismo di dissolvenza di Master 1/2.")
     calderone2_cfg = {'files': None, 'mix_from': 0.5, 'mix_enabled': False, 'speed': 6,
-                       'split_on': False, 'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5,
+                       'split_on': False, 'split_mode': '2 zone (metà/metà)',
+                       'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5,
                        'split_move_random': False, 'split_move_speed': 1.0, 'split_beat_react': False,
+                       'grid_rows': 2, 'grid_cols': 2,
                        'apply_glitch': False, 'pan_x': 0.5, 'pan_y': 0.5, 'zoom': 1.0}
     if calderone2_on:
         calderone2_cfg['files'] = st.file_uploader("Foto — Calderone 2", type=["jpg","png","jpeg"],
@@ -1983,32 +2009,59 @@ with c1:
                  "effetti/glitch), l'altra mostra il Calderone 2 pulito. Si applica sopra qualunque "
                  "modalità (Nessun Effetto, Orizzontale, Strisce...).")
         if calderone2_cfg['split_on']:
-            calderone2_cfg['split_orient'] = st.radio("Direzione split", 
-                ["Verticale (sx/dx)", "Orizzontale (alto/basso)"],
-                horizontal=True, key="calderone2_split_orient")
-            calderone2_cfg['split_pct'] = st.slider("Quota Calderone 1 (%)", 0, 100, 50,
-                key="calderone2_split_pct",
-                help="Percentuale di frame occupata dal Calderone 1 (sinistra o alto); "
-                     "il resto va al Calderone 2. Se 'Movimento random' qui sotto è spento, "
-                     "questo valore resta fisso per tutto il video.") / 100.0
-            calderone2_cfg['split_move_random'] = st.toggle("Movimento random (split)", value=False,
-                key="calderone2_split_move_random",
-                help="Fa scivolare nel tempo il confine tra i due Calderoni, invece di lasciarlo "
-                     "fisso alla Quota impostata sopra.")
-            if calderone2_cfg['split_move_random']:
-                calderone2_cfg['split_move_speed'] = st.slider("Velocità movimento (split)", 0.1, 5.0, 1.0,
-                    step=0.1, key="calderone2_split_move_speed")
-                calderone2_cfg['split_beat_react'] = st.toggle("🎵 Sincronizza al beat (split)", value=False,
-                    key="calderone2_split_beat_react",
-                    help="Il movimento del confine segue l'orologio musicale (beat) invece del tempo reale.")
+            calderone2_cfg['split_mode'] = st.radio("Modalità split",
+                ["2 zone (metà/metà)", "Griglia a scacchiera"],
+                horizontal=True, key="calderone2_split_mode",
+                help="'2 zone' taglia il frame in due metà con confine regolabile. "
+                     "'Griglia a scacchiera' divide il frame in righe×colonne, alternando "
+                     "Calderone 1 e Calderone 2 a scacchiera (come una damiera).")
+
+            if calderone2_cfg['split_mode'] == "2 zone (metà/metà)":
+                calderone2_cfg['split_orient'] = st.radio("Direzione split",
+                    ["Verticale (sx/dx)", "Orizzontale (alto/basso)"],
+                    horizontal=True, key="calderone2_split_orient")
+                calderone2_cfg['split_pct'] = st.slider("Quota Calderone 1 (%)", 0, 100, 50,
+                    key="calderone2_split_pct",
+                    help="Percentuale di frame occupata dal Calderone 1 (sinistra o alto); "
+                         "il resto va al Calderone 2. Se 'Movimento random' qui sotto è spento, "
+                         "questo valore resta fisso per tutto il video.") / 100.0
+                calderone2_cfg['split_move_random'] = st.toggle("Movimento random (split)", value=False,
+                    key="calderone2_split_move_random",
+                    help="Fa scivolare nel tempo il confine tra i due Calderoni, invece di lasciarlo "
+                         "fisso alla Quota impostata sopra.")
+                if calderone2_cfg['split_move_random']:
+                    calderone2_cfg['split_move_speed'] = st.slider("Velocità movimento (split)", 0.1, 5.0, 1.0,
+                        step=0.1, key="calderone2_split_move_speed")
+                    calderone2_cfg['split_beat_react'] = st.toggle("🎵 Sincronizza al beat (split)", value=False,
+                        key="calderone2_split_beat_react",
+                        help="Il movimento del confine segue l'orologio musicale (beat) invece del tempo reale.")
+                else:
+                    calderone2_cfg['split_move_speed'] = 1.0
+                    calderone2_cfg['split_beat_react'] = False
             else:
+                calderone2_cfg['split_move_random'] = False
                 calderone2_cfg['split_move_speed'] = 1.0
                 calderone2_cfg['split_beat_react'] = False
+                _grid_presets = {"2×2": (2, 2), "2×4": (2, 4), "4×2": (4, 2), "3×3": (3, 3),
+                                  "Personalizzata": None}
+                _grid_choice = st.selectbox("Preset griglia", list(_grid_presets.keys()),
+                    key="calderone2_grid_preset",
+                    help="Numero di righe × colonne della scacchiera. Le celle si alternano "
+                         "Calderone 1 / Calderone 2 come su una scacchiera.")
+                if _grid_choice == "Personalizzata":
+                    _gc1, _gc2 = st.columns(2)
+                    with _gc1:
+                        calderone2_cfg['grid_rows'] = st.slider("Righe", 2, 8, 2, key="calderone2_grid_rows")
+                    with _gc2:
+                        calderone2_cfg['grid_cols'] = st.slider("Colonne", 2, 8, 2, key="calderone2_grid_cols")
+                else:
+                    calderone2_cfg['grid_rows'], calderone2_cfg['grid_cols'] = _grid_presets[_grid_choice]
+
             calderone2_cfg['apply_glitch'] = st.toggle(
                 "🌀 Applica anche al Calderone 2 gli stessi effetti Chaos/Strand", value=False,
                 key="calderone2_apply_glitch",
-                help="Se attivo, la metà del Calderone 2 riceve lo stesso trattamento glitch "
-                     "(Geometria + Chaos + Strand) del Calderone 1, invece di restare una foto pulita.")
+                help="Se attivo, la/le zone del Calderone 2 ricevono lo stesso trattamento glitch "
+                     "(Geometria + Chaos + Strand) del Calderone 1, invece di restare foto pulite.")
         st.divider()
 
     up_a = st.file_uploader("AUDIO", type=["mp3","wav"])
@@ -2575,27 +2628,56 @@ with bottom_container:
                 _c2_prev_file = calderone2_cfg['files'][0]
                 _c2_prev_file.seek(0)
                 _c2_prev_img = np.array(Image.open(_c2_prev_file).convert("RGB"))
-                _pct = calderone2_cfg.get('split_pct', 0.5)
                 _c2_px = calderone2_cfg.get('pan_x', 0.5)
                 _c2_py = calderone2_cfg.get('pan_y', 0.5)
                 _c2_z  = calderone2_cfg.get('zoom', 1.0)
-                if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
-                    _sx = int(pdw * _pct)
-                    if 0 < _sx < pdw:
-                        _pw2 = pdw - _sx
-                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, _pw2, pdh, _c2_px, _c2_py, _c2_z), (_pw2, pdh))
-                        preview_out[:, _sx:pdw] = _patch2
-                        preview_out[:, max(0, _sx - 1):_sx + 1] = [255, 220, 0]
+
+                if calderone2_cfg.get('split_mode') == 'Griglia a scacchiera':
+                    _rows = max(2, int(calderone2_cfg.get('grid_rows', 2)))
+                    _cols = max(2, int(calderone2_cfg.get('grid_cols', 2)))
+                    for _r in range(_rows):
+                        _y0 = int(round(pdh * _r / _rows))
+                        _y1 = int(round(pdh * (_r + 1) / _rows))
+                        _cph = _y1 - _y0
+                        if _cph <= 0:
+                            continue
+                        for _c in range(_cols):
+                            if (_r + _c) % 2 == 0:
+                                continue
+                            _x0 = int(round(pdw * _c / _cols))
+                            _x1 = int(round(pdw * (_c + 1) / _cols))
+                            _cpw = _x1 - _x0
+                            if _cpw <= 0:
+                                continue
+                            _patch2 = cv2.resize(cover_crop(_c2_prev_img, _cpw, _cph, _c2_px, _c2_py, _c2_z), (_cpw, _cph))
+                            preview_out[_y0:_y1, _x0:_x1] = _patch2
+                    # griglia gialla sopra le celle Calderone 1 per mostrare il pattern
+                    for _r in range(1, _rows):
+                        _yy = int(round(pdh * _r / _rows))
+                        preview_out[max(0, _yy - 1):_yy + 1, :] = [255, 220, 0]
+                    for _c in range(1, _cols):
+                        _xx = int(round(pdw * _c / _cols))
+                        preview_out[:, max(0, _xx - 1):_xx + 1] = [255, 220, 0]
+                    _capt += f" · scacchiera {_rows}×{_cols} (giallo = confini celle)"
                 else:
-                    _sy = int(pdh * _pct)
-                    if 0 < _sy < pdh:
-                        _ph2 = pdh - _sy
-                        _patch2 = cv2.resize(cover_crop(_c2_prev_img, pdw, _ph2, _c2_px, _c2_py, _c2_z), (pdw, _ph2))
-                        preview_out[_sy:pdh, :] = _patch2
-                        preview_out[max(0, _sy - 1):_sy + 1, :] = [255, 220, 0]
-                _capt += " · giallo = confine Calderone 1/2"
-                if calderone2_cfg.get('split_move_random'):
-                    _capt += " (si muove nel render)"
+                    _pct = calderone2_cfg.get('split_pct', 0.5)
+                    if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
+                        _sx = int(pdw * _pct)
+                        if 0 < _sx < pdw:
+                            _pw2 = pdw - _sx
+                            _patch2 = cv2.resize(cover_crop(_c2_prev_img, _pw2, pdh, _c2_px, _c2_py, _c2_z), (_pw2, pdh))
+                            preview_out[:, _sx:pdw] = _patch2
+                            preview_out[:, max(0, _sx - 1):_sx + 1] = [255, 220, 0]
+                    else:
+                        _sy = int(pdh * _pct)
+                        if 0 < _sy < pdh:
+                            _ph2 = pdh - _sy
+                            _patch2 = cv2.resize(cover_crop(_c2_prev_img, pdw, _ph2, _c2_px, _c2_py, _c2_z), (pdw, _ph2))
+                            preview_out[_sy:pdh, :] = _patch2
+                            preview_out[max(0, _sy - 1):_sy + 1, :] = [255, 220, 0]
+                    _capt += " · giallo = confine Calderone 1/2"
+                    if calderone2_cfg.get('split_move_random'):
+                        _capt += " (si muove nel render)"
 
             if overlay_panel_on and overlays_cfg:
                 _ov_preview = []
