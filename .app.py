@@ -1498,9 +1498,16 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             cols = max(1, int(calderone2_cfg.get('split_grid_cols', 2)))
             row_b = np.linspace(0, rh, rows + 1).astype(int)
             col_b = np.linspace(0, rw, cols + 1).astype(int)
+            if calderone2_cfg.get('split_grid_move'):
+                _gspd = max(0.1, calderone2_cfg.get('split_grid_move_speed', 1.0))
+                _greact = bool(calderone2_cfg.get('split_grid_beat_react', False)) and beat_sync and not slideshow_mode
+                _gphase = (beat_phase[f] if beat_phase is not None else t) * _gspd if _greact else t * _gspd
+                flip = int(_gphase)  # ogni "giro" inverte la scacchiera (marcia avanti/indietro)
+            else:
+                flip = 0
             for r in range(rows):
                 for c in range(cols):
-                    if (r + c) % 2 == 1:  # scacchiera: solo le celle "dispari" vanno a Calderone 2
+                    if (r + c + flip) % 2 == 1:  # scacchiera: solo le celle "dispari" vanno a Calderone 2
                         y0, y1 = row_b[r], row_b[r + 1]
                         x0, x1 = col_b[c], col_b[c + 1]
                         if y1 > y0 and x1 > x0:
@@ -2062,6 +2069,7 @@ with c1:
     calderone2_cfg = {'files': None, 'mix_from': 0.5, 'mix_enabled': False, 'speed': 6,
                        'split_on': False, 'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5,
                        'split_grid_rows': 2, 'split_grid_cols': 2,
+                       'split_grid_move': False, 'split_grid_move_speed': 1.0, 'split_grid_beat_react': False,
                        'split_move_random': False, 'split_move_speed': 1.0, 'split_beat_react': False,
                        'apply_glitch': False, 'pan_x': 0.5, 'pan_y': 0.5, 'zoom': 1.0}
     if calderone2_on:
@@ -2100,6 +2108,22 @@ with c1:
                     calderone2_cfg['split_grid_cols'] = st.slider("Colonne", 1, 10, 2, key="calderone2_grid_cols")
                 st.caption("Le celle si alternano Calderone 1 / Calderone 2 a scacchiera "
                            "(es. 2×2 = 4 celle, 3×5 = 15 celle).")
+                calderone2_cfg['split_grid_move'] = st.toggle("🔀 Movimento scacchiera", value=False,
+                    key="calderone2_grid_move",
+                    help="La scacchiera si inverte periodicamente nel tempo (le celle che mostrano "
+                         "Calderone 1 e Calderone 2 si scambiano) invece di restare fissa — effetto "
+                         "flicker/strobo a griglia.")
+                if calderone2_cfg['split_grid_move']:
+                    calderone2_cfg['split_grid_move_speed'] = st.slider("Velocità inversione (griglia)", 0.1, 5.0, 1.0,
+                        step=0.1, key="calderone2_grid_move_speed",
+                        help="Quanto spesso si inverte la scacchiera. Più alto = flicker più veloce.")
+                    calderone2_cfg['split_grid_beat_react'] = st.toggle("🎵 Sincronizza al beat (griglia)", value=False,
+                        key="calderone2_grid_beat_react",
+                        help="L'inversione segue l'orologio musicale (un'inversione ogni tot beat) "
+                             "invece del tempo reale.")
+                else:
+                    calderone2_cfg['split_grid_move_speed'] = 1.0
+                    calderone2_cfg['split_grid_beat_react'] = False
             else:
                 calderone2_cfg['split_pct'] = st.slider("Quota Calderone 1 (%)", 0, 100, 50,
                     key="calderone2_split_pct",
@@ -2745,7 +2769,7 @@ with bottom_container:
                         preview_out[_sy:pdh, :] = _patch2
                         preview_out[max(0, _sy - 1):_sy + 1, :] = [255, 220, 0]
                 _capt += " · giallo = confine Calderone 1/2"
-                if calderone2_cfg.get('split_move_random'):
+                if calderone2_cfg.get('split_move_random') or calderone2_cfg.get('split_grid_move'):
                     _capt += " (si muove nel render)"
 
             if overlay_panel_on and overlays_cfg:
