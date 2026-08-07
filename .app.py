@@ -439,35 +439,41 @@ def draw_stripe_preview_overlay(overlay, stripes, stripe_orientation, dh, dw):
     configurata, nella posizione/dimensione impostata — usato sia dall'anteprima
     strisce "normale" sia da quella unificata coi Livelli. Muta 'overlay' in place.
     """
-    def _draw_stripe_h(ov, p0, p1, l0, l1):
+    def _draw_stripe_h(ov, p0, p1, l0, l1, vis_amt):
         p0, p1 = max(0, p0), min(dh, p1)
         l0, l1 = max(0, l0), min(dw, l1)
         if p1 > p0 and l1 > l0:
-            ov[p0:p1, l0:l1] = (ov[p0:p1, l0:l1] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
+            ov[p0:p1, l0:l1] = (ov[p0:p1, l0:l1] * (1 - vis_amt) + np.array([120, 80, 220]) * vis_amt).astype(np.uint8)
         if p0 > 1: ov[max(0, p0 - 2):p0, l0:l1] = [80, 40, 200]
         if p1 < dh: ov[p1:min(dh, p1 + 2), l0:l1] = [80, 40, 200]
 
-    def _draw_stripe_v(ov, p0, p1, l0, l1):
+    def _draw_stripe_v(ov, p0, p1, l0, l1, vis_amt):
         p0, p1 = max(0, p0), min(dw, p1)
         l0, l1 = max(0, l0), min(dh, l1)
         if p1 > p0 and l1 > l0:
-            ov[l0:l1, p0:p1] = (ov[l0:l1, p0:p1] * 0.35 + np.array([120, 80, 220]) * 0.65).astype(np.uint8)
+            ov[l0:l1, p0:p1] = (ov[l0:l1, p0:p1] * (1 - vis_amt) + np.array([120, 80, 220]) * vis_amt).astype(np.uint8)
         if p0 > 1: ov[l0:l1, max(0, p0 - 2):p0] = [80, 40, 200]
         if p1 < dw: ov[l0:l1, p1:min(dw, p1 + 2)] = [80, 40, 200]
 
     for s in stripes:
         s_orient = s.get('orientation', stripe_orientation)
         VIOLET = np.array([120, 80, 220])
+        # Il riempimento viola segue l'opacità reale della striscia (0 = quasi
+        # invisibile, si vede solo il bordino guida sottile); il bordo resta
+        # sempre visibile così la posizione/forma è comunque individuabile
+        # anche a opacità 0.
+        _op = float(s.get('opacity', 1.0))
+        _vis_amt = 0.65 * _op
 
         if s_orient == "Orizzontale":
             off = s.get('offset_length', 50.0)
             p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dh, dw))
-            _draw_stripe_h(overlay, p0, p1, l0, l1)
+            _draw_stripe_h(overlay, p0, p1, l0, l1, _vis_amt)
 
         elif s_orient == "Verticale":
             off = s.get('offset_length', 50.0)
             p0, p1, l0, l1 = compute_stripe_coords(s['center'], s['size'], s['length'], off, (dw, dh))
-            _draw_stripe_v(overlay, p0, p1, l0, l1)
+            _draw_stripe_v(overlay, p0, p1, l0, l1, _vis_amt)
 
         elif s_orient == "Striscia Ruotata":
             cx_r = int(s.get("cx", 50) / 100 * dw)
