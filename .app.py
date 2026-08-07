@@ -1739,13 +1739,29 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         _extra_src['Foto Fissa'] = get_photo_bg_frame()
                     if bg_video_cap is not None and any(s.get('source') == 'Video' for s in stripes):
                         _extra_src['Video'] = get_video_bg_frame(t)
+                    # anche con Geometria del Calderone su "Nessun Effetto", le strisce possono
+                    # comunque essere glitchate: il toggle e la geometria di ogni striscia sono
+                    # indipendenti dallo sfondo.
+                    if stripe_glitch:
+                        _ne_stripe_glitch_sources = {}
+                        for _src_name, _src_frame in (('Calderone', calder_clean),) + (('Calderone 2', _extra_src.get('Calderone 2')),):
+                            if _src_frame is None:
+                                continue
+                            _geo_needed = {s.get('geometria', 'Uguale al Calderone') for s in stripes
+                                           if s.get('source', 'Calderone') == _src_name} - {'Uguale al Calderone'}
+                            if _geo_needed:
+                                _ne_stripe_glitch_sources[_src_name] = {geo: apply_glitch_stripes(_src_frame, _src_frame, h, w, geo, strand_val, rand_lines, val)
+                                                                         for geo in _geo_needed}
+                    else:
+                        _ne_stripe_glitch_sources = {}
                     return _finalize(
                         apply_stripe_window(_bg, calder_clean, calder_clean, h, w,
-                                            stripes, stripe_orientation, False, stripe_reverse,
+                                            stripes, stripe_orientation, stripe_glitch, stripe_reverse,
                                             _aenv, _soff, stripe_chroma, stripe_flash, _bval, _bgate,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
                                             opacity_mod_val=_modv,
-                                            extra_sources=(_extra_src or None)),
+                                            extra_sources=(_extra_src or None),
+                                            stripe_glitch_sources=_ne_stripe_glitch_sources),
                         f, t)
                 return _finalize(_custom_bg if _custom_bg is not None else pick(), f, t)
 
