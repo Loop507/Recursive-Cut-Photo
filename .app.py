@@ -1099,7 +1099,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     slideshow_mode, slide_hold, slide_trans, slide_trans_type,
                     stripe_mode=False, stripes=None, stripe_orientation="Orizzontale",
                     stripe_bg="Master 1", stripe_glitch=False, stripe_reverse=False,
-                    stripe_chroma=False, stripe_flash=False,
+                    stripe_chroma=False, stripe_flash=False, stripe_geometria="Uguale al Calderone",
                     global_chroma=False, global_chroma_amt=6,
                     global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
                     manual_bpm=None, onset_sensitivity=None,
@@ -1575,7 +1575,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         dest = img_next
                     glitched = apply_glitch_stripes(base, dest, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes:
-                        out_frame = apply_stripe_window(_get_bg_slide(glitched), base, glitched, h, w,
+                        if stripe_glitch and stripe_geometria != "Uguale al Calderone":
+                            stripe_glitched = apply_glitch_stripes(base, base, h, w, stripe_geometria, strand_val, rand_lines, intensity)
+                        else:
+                            stripe_glitched = glitched
+                        out_frame = apply_stripe_window(_get_bg_slide(glitched), base, stripe_glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
@@ -1587,7 +1591,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     blend = (img_cur * (1.0 - trans_prog) + img_next * trans_prog).astype(np.uint8)
                     glitched = apply_glitch_stripes(blend, blend, h, w, orientation, strand_val, rand_lines, intensity)
                     if stripe_mode and stripes:
-                        out_frame = apply_stripe_window(_get_bg_slide(glitched), blend, glitched, h, w,
+                        if stripe_glitch and stripe_geometria != "Uguale al Calderone":
+                            stripe_glitched = apply_glitch_stripes(blend, blend, h, w, stripe_geometria, strand_val, rand_lines, intensity)
+                        else:
+                            stripe_glitched = glitched
+                        out_frame = apply_stripe_window(_get_bg_slide(glitched), blend, stripe_glitched, h, w,
                                                         stripes, stripe_orientation, stripe_glitch,
                                                         stripe_reverse, _aenv, _soff,
                                                         stripe_chroma, stripe_flash, _bval, _bgate,
@@ -1798,7 +1806,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     _extra_src['Foto Fissa'] = get_photo_bg_frame()
                 if bg_video_cap is not None and any(s.get('source') == 'Video' for s in stripes):
                     _extra_src['Video'] = get_video_bg_frame(t)
-                frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
+                if stripe_glitch and stripe_geometria != "Uguale al Calderone":
+                    stripe_glitched = apply_glitch_stripes(calder_clean, calder_clean, h, w, stripe_geometria, strand_val, rand_lines, val)
+                else:
+                    stripe_glitched = frame
+                frame = apply_stripe_window(_bg, calder_clean, stripe_glitched, h, w,
                                             stripes, stripe_orientation, stripe_glitch,
                                             stripe_reverse, _aenv, _soff,
                                             stripe_chroma, stripe_flash, _bval, _bgate,
@@ -1870,12 +1882,13 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     stripe_info_en = ""
     if stripe_mode and stripes:
         bg_label = "Calderone animato (Chaos/Geometria)" if stripe_bg == "Render" else "Foto statica pulita"
+        geo_label = orientation if stripe_geometria == "Uguale al Calderone" else stripe_geometria
         stripe_info_it = f"""
 * STRISCE SELETTIVE: {len(stripes)} striscia/e ({stripe_orientation})
-* Sfondo: {bg_label} | Striscia: {'GLITCHATA' if stripe_glitch else 'ORIGINALE'}"""
+* Sfondo: {bg_label} | Striscia: {'GLITCHATA (' + geo_label + ')' if stripe_glitch else 'ORIGINALE'}"""
         stripe_info_en = f"""
 * SELECTIVE STRIPES: {len(stripes)} stripe(s) ({stripe_orientation})
-* Background: {bg_label} | Stripe: {'GLITCHED' if stripe_glitch else 'ORIGINAL'}"""
+* Background: {bg_label} | Stripe: {'GLITCHED (' + geo_label + ')' if stripe_glitch else 'ORIGINAL'}"""
 
     bpm_source_en = {"MANUALE": "MANUAL", "AUTO": "AUTO", "N/A": "N/A"}.get(bpm_source, bpm_source)
 
@@ -2068,6 +2081,7 @@ with bottom_container:
         stripe_bg          = "Master 1"
         stripe_glitch      = False
         stripe_reverse     = False
+        stripe_geometria   = "Uguale al Calderone"
         stripe_force_beat_react = False
 
         if stripe_mode:
@@ -2091,6 +2105,13 @@ with bottom_container:
             with col_tog2:
                 stripe_reverse = st.toggle("🔄 Reverse", value=False, key="stripe_reverse_g",
                     help="Inverte: strisce ferme, tutto il resto Calderone.")
+
+            if stripe_glitch:
+                stripe_geometria = st.selectbox("🎛️ Geometria striscia",
+                    ["Uguale al Calderone", "Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Bande Temporali"],
+                    key="stripe_geometria_g",
+                    help="Quale algoritmo di glitch usare DENTRO la striscia, indipendente dalla Geometria "
+                         "del Calderone (sfondo). 'Uguale al Calderone' = comportamento di prima.")
 
             stripe_force_beat_react = st.toggle("🎵 Tutto a tempo", value=False, key="stripe_force_beat_g",
                 help="Forza 'Sincronizza al beat' su TUTTE le strisce, ignorando il toggle di ognuna. "
@@ -2400,6 +2421,7 @@ with bottom_container:
                     "stripe_orientation": stripe_orientation,
                     "stripe_bg":          stripe_bg,
                     "stripe_glitch":      stripe_glitch,
+                    "stripe_geometria":   stripe_geometria,
                     "stripe_reverse":     stripe_reverse,
                     "stripe_chroma":      stripe_chroma,
                     "stripe_flash":       stripe_flash,
@@ -2426,6 +2448,8 @@ with bottom_container:
                             st.session_state["stripe_bg_render_g"] = (loaded["stripe_bg"] == "Render")
                         if "stripe_glitch" in loaded:
                             st.session_state["stripe_glitch_g"] = loaded["stripe_glitch"]
+                        if "stripe_geometria" in loaded:
+                            st.session_state["stripe_geometria_g"] = loaded["stripe_geometria"]
                         if "stripe_reverse" in loaded:
                             st.session_state["stripe_reverse_g"] = loaded["stripe_reverse"]
                         st.session_state["stripe_mode_g"] = True  # riapri il pannello strisce
@@ -2841,6 +2865,7 @@ with c3:
             stripe_chroma, stripe_flash,
             global_chroma, global_chroma_amt,
             global_flash, global_flash_threshold, global_flash_intensity,
+            stripe_geometria=stripe_geometria,
             manual_bpm=manual_bpm, onset_sensitivity=onset_sensitivity,
             calderone2_cfg=calderone2_cfg, calderone1_cfg=calderone1_cfg,
             bg_source=bg_source, bg_static_file=bg_static_file, bg_video_file=bg_video_file,
