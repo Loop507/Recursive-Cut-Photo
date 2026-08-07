@@ -865,9 +865,10 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         opacity = float(s.get('opacity', 1.0))
         chroma_on = stripe_chroma and chroma_amt > 0
         _s_source = s.get('source', 'Calderone')
-        if _s_source == 'Calderone' and stripe_glitch and not stripe_reverse and stripe_glitch_sources:
-            _s_geo = s.get('geometria', 'Uguale al Calderone')
-            this_src = stripe_glitch_sources.get(_s_geo, src_stripe) if _s_geo != "Uguale al Calderone" else src_stripe
+        _s_geo = s.get('geometria', 'Uguale al Calderone')
+        _src_geo_map = (stripe_glitch_sources or {}).get(_s_source)
+        if stripe_glitch and not stripe_reverse and _s_geo != "Uguale al Calderone" and _src_geo_map and _s_geo in _src_geo_map:
+            this_src = _src_geo_map[_s_geo]
         else:
             this_src = sources.get(_s_source, src_stripe)
 
@@ -1584,8 +1585,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         if stripe_glitch:
                             _geo_needed = {s.get('geometria', 'Uguale al Calderone') for s in stripes
                                            if s.get('source', 'Calderone') == 'Calderone'} - {'Uguale al Calderone'}
-                            stripe_glitch_sources = {geo: apply_glitch_stripes(base, base, h, w, geo, strand_val, rand_lines, intensity)
-                                                      for geo in _geo_needed}
+                            stripe_glitch_sources = {'Calderone': {geo: apply_glitch_stripes(base, base, h, w, geo, strand_val, rand_lines, intensity)
+                                                      for geo in _geo_needed}} if _geo_needed else {}
                         else:
                             stripe_glitch_sources = {}
                         out_frame = apply_stripe_window(_get_bg_slide(glitched), base, glitched, h, w,
@@ -1604,8 +1605,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         if stripe_glitch:
                             _geo_needed = {s.get('geometria', 'Uguale al Calderone') for s in stripes
                                            if s.get('source', 'Calderone') == 'Calderone'} - {'Uguale al Calderone'}
-                            stripe_glitch_sources = {geo: apply_glitch_stripes(blend, blend, h, w, geo, strand_val, rand_lines, intensity)
-                                                      for geo in _geo_needed}
+                            stripe_glitch_sources = {'Calderone': {geo: apply_glitch_stripes(blend, blend, h, w, geo, strand_val, rand_lines, intensity)
+                                                      for geo in _geo_needed}} if _geo_needed else {}
                         else:
                             stripe_glitch_sources = {}
                         out_frame = apply_stripe_window(_get_bg_slide(glitched), blend, glitched, h, w,
@@ -1821,10 +1822,15 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 if bg_video_cap is not None and any(s.get('source') == 'Video' for s in stripes):
                     _extra_src['Video'] = get_video_bg_frame(t)
                 if stripe_glitch:
-                    _geo_needed = {s.get('geometria', 'Uguale al Calderone') for s in stripes
-                                   if s.get('source', 'Calderone') == 'Calderone'} - {'Uguale al Calderone'}
-                    stripe_glitch_sources = {geo: apply_glitch_stripes(calder_clean, calder_clean, h, w, geo, strand_val, rand_lines, val)
-                                              for geo in _geo_needed}
+                    stripe_glitch_sources = {}
+                    for _src_name, _src_frame in (('Calderone', calder_clean),) + (('Calderone 2', _extra_src.get('Calderone 2')),):
+                        if _src_frame is None:
+                            continue
+                        _geo_needed = {s.get('geometria', 'Uguale al Calderone') for s in stripes
+                                       if s.get('source', 'Calderone') == _src_name} - {'Uguale al Calderone'}
+                        if _geo_needed:
+                            stripe_glitch_sources[_src_name] = {geo: apply_glitch_stripes(_src_frame, _src_frame, h, w, geo, strand_val, rand_lines, val)
+                                                                 for geo in _geo_needed}
                 else:
                     stripe_glitch_sources = {}
                 frame = apply_stripe_window(_bg, calder_clean, frame, h, w,
@@ -2240,12 +2246,14 @@ with bottom_container:
                     else:
                         s_dict['source'] = "Calderone"
 
-                    if s_dict['source'] == "Calderone":
+                    if s_dict['source'] in ("Calderone", "Calderone 2"):
                         s_dict['geometria'] = st.selectbox("🎛️ Geometria di questa striscia",
                             ["Uguale al Calderone", "Orizzontale", "Verticale", "Mix (H+V)", "Mosaico", "Bande Temporali"],
                             key=f"sgeo_{i}",
                             help="Solo se '⚡ Striscia glitchata' è ON in alto: quale algoritmo di glitch "
-                                 "usare DENTRO questa striscia, indipendente dalle altre strisce e dallo sfondo.")
+                                 "usare DENTRO questa striscia (si applica alla sorgente scelta sopra, "
+                                 "sia Calderone che Calderone 2), indipendente dalle altre strisce e dallo sfondo. "
+                                 "'Uguale al Calderone' = nessun glitch extra, contenuto pulito.")
 
                     s_dict['full_fit'] = st.toggle("🖼️ Foto intera nella striscia (adatta, non taglia)",
                         value=False, key=f"sfit_{i}",
