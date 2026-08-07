@@ -1099,14 +1099,15 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     slideshow_mode, slide_hold, slide_trans, slide_trans_type,
                     stripe_mode=False, stripes=None, stripe_orientation="Orizzontale",
                     stripe_bg="Master 1", stripe_glitch=False, stripe_reverse=False,
-                    stripe_chroma=False, stripe_flash=False, stripe_geometria="Uguale al Calderone",
+                    stripe_chroma=False, stripe_flash=False,
                     global_chroma=False, global_chroma_amt=6,
                     global_flash=False, global_flash_threshold=0.7, global_flash_intensity=100,
                     manual_bpm=None, onset_sensitivity=None,
                     calderone2_cfg=None, calderone1_cfg=None,
                     bg_source="Calderone (originale)", bg_static_file=None, bg_video_file=None,
                     overlays_cfg=None,
-                    mod_lab_on=False, mod_lab_amount=0.30):
+                    mod_lab_on=False, mod_lab_amount=0.30,
+                    stripe_geometria="Uguale al Calderone"):
 
     fps = 24
     # Blindatura: max_limit=0 (o negativo, per qualche errore di UI) renderebbe
