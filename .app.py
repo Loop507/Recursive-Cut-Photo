@@ -862,12 +862,11 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         s_orient = s.get('orientation', stripe_orientation)
         chroma_amt = int(s.get('chroma_amount', 6))
         mode    = s.get('blend_mode', 'Normal')
-        opacity = float(s.get('opacity', 1.0))
         chroma_on = stripe_chroma and chroma_amt > 0
         _s_source = s.get('source', 'Calderone')
         _s_geo = s.get('geometria', 'Uguale al Calderone')
         _src_geo_map = (stripe_glitch_sources or {}).get(_s_source)
-        if stripe_glitch and not stripe_reverse and _s_geo != "Uguale al Calderone" and _src_geo_map and _s_geo in _src_geo_map:
+        if stripe_glitch and _s_geo != "Uguale al Calderone" and _src_geo_map and _s_geo in _src_geo_map:
             this_src = _src_geo_map[_s_geo]
         else:
             this_src = sources.get(_s_source, src_stripe)
@@ -1067,6 +1066,14 @@ def analyze_audio(y, sr, total_f, fps, beat_sync, slideshow_mode, genre, manual_
             )
             onset_times = librosa.frames_to_time(onset_frames_bt, sr=sr)
             result['onset_times'] = onset_times
+            # onset_frames_peak (backtrack=False) e onset_frames_bt (backtrack=True) devono
+            # avere stessa lunghezza/ordine (stesso peak-picking, solo il frame è raffinato).
+            # Se una futura versione di librosa cambia questo comportamento, non ci si affida
+            # più a un possibile disallineamento silenzioso: si usa il minimo comune e si logga.
+            if len(onset_frames_peak) != len(onset_frames_bt):
+                _n_common = min(len(onset_frames_peak), len(onset_frames_bt))
+                onset_frames_peak = onset_frames_peak[:_n_common]
+                onset_times = onset_times[:_n_common]
             for peak_frame, ot in zip(onset_frames_peak, onset_times):
                 of = int(ot * fps)
                 if of < total_f:
@@ -1145,6 +1152,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     # --- CALDERONE 2 (opzionale): stesso trattamento glitch del Calderone 1, si mescolano
     # gradualmente in base al progresso — stesso meccanismo di dissolvenza di Master 1/2.
+    MAX_CACHE = 400  # definito qui: usato sia da cache_set2 (sotto) sia da cache_set (più avanti)
+
     pool_imgs2 = []
     calderone2_mix_from = 0.5
     if calderone2_cfg:
@@ -1425,7 +1434,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
 
     # --- CACHE ---
-    MAX_CACHE = 400
     cached_picks = {}
     cache_keys_order = []
 
@@ -1558,9 +1566,10 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 idx_cur = int(t / slide_cycle) % n_photos
             else:
                 cycle_idx = int(t / slide_cycle)
-                random.seed(cycle_idx * 9999)
-                idx_cur = random.randint(0, n_photos - 1)
-                random.seed()
+                # RNG locale e isolato: stessa scelta deterministica per ogni cycle_idx,
+                # senza toccare lo stato globale di random (sicuro anche con rendering
+                # multi-thread/multi-processo, a differenza di random.seed() globale)
+                idx_cur = random.Random(cycle_idx * 9999).randint(0, n_photos - 1)
 
             idx_next = (idx_cur + 1) % n_photos
             img_cur  = pool_imgs[idx_cur]
