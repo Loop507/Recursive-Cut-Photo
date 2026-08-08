@@ -2697,6 +2697,8 @@ with bottom_container:
             _cap_prev = cv2.VideoCapture(_tmp_prev_path)
             _ret_prev, _frame_bgr = _cap_prev.read()
             _cap_prev.release()
+            try: os.unlink(_tmp_prev_path)
+            except OSError: pass
             if _ret_prev:
                 prev_img_full = cv2.cvtColor(_frame_bgr, cv2.COLOR_BGR2RGB)
                 st.caption("🎬 Primo fotogramma del video — nel render cambia nel tempo (con loop).")
