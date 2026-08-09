@@ -552,7 +552,11 @@ def fit_whole_photo_in_box(src, canvas_h, canvas_w, box_cx, box_cy, box_h, box_w
     fitted = cover_crop(src, box_w, box_h)
     fitted = cv2.resize(fitted, (box_w, box_h))
 
-    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=src.dtype)
+    # Canale-agnostico: funziona sia per patch RGB (h,w,3) sia per una singola
+    # mappa alpha (h,w) o (h,w,1), cosi' la stessa funzione puo' "fittare nel box"
+    # sia il colore che la trasparenza di una foto, con identica geometria.
+    canvas_shape = (canvas_h, canvas_w) if fitted.ndim == 2 else (canvas_h, canvas_w, fitted.shape[2])
+    canvas = np.zeros(canvas_shape, dtype=src.dtype)
     x0 = int(box_cx - box_w // 2)
     y0 = int(box_cy - box_h // 2)
     src_x0, src_y0 = max(0, -x0), max(0, -y0)
@@ -578,7 +582,7 @@ def feather_binary_mask(mask, feather_pct):
 
 def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
                   length_pct, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False,
-                  edge_feather=0.0):
+                  edge_feather=0.0, src_alpha=None):
     """Disegna una striscia ruotata (lancetta) usando una maschera OpenCV."""
     cx = int(cx_pct / 100.0 * w)
     cy = int(cy_pct / 100.0 * h)
@@ -612,19 +616,23 @@ def draw_lancetta(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
         bx1, by1 = pts[:, 0].max(), pts[:, 1].max()
         box_cx, box_cy = (bx0 + bx1) // 2, (by0 + by1) // 2
         patch = fit_whole_photo_in_box(src_stripe, h, w, box_cx, box_cy, by1 - by0, bx1 - bx0)
+        alpha_patch = fit_whole_photo_in_box(src_alpha, h, w, box_cx, box_cy, by1 - by0, bx1 - bx0) if src_alpha is not None else None
     else:
         patch = src_stripe.copy()
+        alpha_patch = src_alpha
     if chroma_on and chroma_amt > 0:
         patch = apply_chroma(patch, chroma_amt)
 
     blended = blend_patch(out, patch, mode, opacity)
     mask3 = mask[:, :, np.newaxis] / 255.0
+    if alpha_patch is not None:
+        mask3 = mask3 * alpha_patch
     out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
 
 
 def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
                  filled, thickness_px, chroma_on, chroma_amt, mode, opacity, full_fit=False,
-                 edge_feather=0.0):
+                 edge_feather=0.0, src_alpha=None):
     """Disegna un cerchio (pieno o bordo) come maschera."""
     cx = int(cx_pct / 100.0 * w)
     cy = int(cy_pct / 100.0 * h)
@@ -642,20 +650,24 @@ def draw_cerchio(out, src_stripe, h, w, cx_pct, cy_pct, radius_pct,
 
     if full_fit:
         patch = fit_whole_photo_in_box(src_stripe, h, w, cx, cy, radius * 2, radius * 2)
+        alpha_patch = fit_whole_photo_in_box(src_alpha, h, w, cx, cy, radius * 2, radius * 2) if src_alpha is not None else None
     else:
         patch = src_stripe.copy()
+        alpha_patch = src_alpha
     if chroma_on and chroma_amt > 0:
         patch = apply_chroma(patch, chroma_amt)
 
     blended = blend_patch(out, patch, mode, opacity)
     mask3 = mask[:, :, np.newaxis] / 255.0
+    if alpha_patch is not None:
+        mask3 = mask3 * alpha_patch
     out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
 
 
 
 def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
                           spessore_pct, lunghezza_pct, chroma_on, chroma_amt, mode, opacity, full_fit=False,
-                          edge_feather=0.0):
+                          edge_feather=0.0, src_alpha=None):
     """
     Striscia rettangolare larga che ruota attorno al suo centro.
     cx_pct, cy_pct: centro di rotazione (%)
@@ -697,13 +709,17 @@ def draw_striscia_ruotata(out, src_stripe, h, w, cx_pct, cy_pct, angle_deg,
         bx1, by1 = pts[:, 0].max(), pts[:, 1].max()
         box_cx, box_cy = (bx0 + bx1) // 2, (by0 + by1) // 2
         patch = fit_whole_photo_in_box(src_stripe, h, w, box_cx, box_cy, by1 - by0, bx1 - bx0)
+        alpha_patch = fit_whole_photo_in_box(src_alpha, h, w, box_cx, box_cy, by1 - by0, bx1 - bx0) if src_alpha is not None else None
     else:
         patch = src_stripe.copy()
+        alpha_patch = src_alpha
     if chroma_on and chroma_amt > 0:
         patch = apply_chroma(patch, chroma_amt)
 
     blended = blend_patch(out, patch, mode, opacity)
     mask3 = mask[:, :, np.newaxis] / 255.0
+    if alpha_patch is not None:
+        mask3 = mask3 * alpha_patch
     out[:] = (out * (1.0 - mask3) + blended * mask3).astype(np.uint8)
 
 
@@ -767,7 +783,8 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         stripe_chroma=False, stripe_flash=False,
                         beat_val=0.0, beat_gate_val=0.0, beat_sync_on=False,
                         t=0.0, total_dur=10.0, extra_sources=None,
-                        opacity_mod_val=0.0, stripe_glitch_sources=None):
+                        opacity_mod_val=0.0, stripe_glitch_sources=None,
+                        extra_alpha_sources=None):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
              move_random, move_speed, offset_length, chroma_amount,
@@ -780,6 +797,10 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
     extra_sources:  dict {nome_sorgente: frame_rgb} — Calderoni extra / Foto Fisse selezionabili
                     per singola striscia via s['source']. 'Calderone' (il comportamento di
                     sempre) è sempre disponibile e riflette stripe_reverse dinamicamente.
+    extra_alpha_sources: dict {nome_sorgente: alpha (h,w,1) 0-1 oppure None} — canale alpha
+                    per-pixel del PNG originale di quella sorgente (es. 'Calderone 2'), usato
+                    per far vedere cosa c'e' sotto nelle zone trasparenti della foto invece di
+                    trattarla come sempre opaca. Sorgenti assenti dal dict = opache (come prima).
     """
     if stripe_offsets is None:
         stripe_offsets = [50.0] * len(stripes)
@@ -797,46 +818,63 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         src_stripe = src_calder
 
     sources = {'Calderone': src_stripe}
+    alpha_sources = dict(extra_alpha_sources) if extra_alpha_sources else {}
     if extra_sources:
         sources.update(extra_sources)
 
-    def _paste_h(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False, edge_feather=0.0):
+    def _paste_h(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False, edge_feather=0.0, src_alpha=None):
         if p1 > p0 and l1 > l0:
             if full_fit:
                 box_cx, box_cy = (l0 + l1) // 2, (p0 + p1) // 2
                 full = fit_whole_photo_in_box(src, h, w, box_cx, box_cy, p1 - p0, l1 - l0)
                 patch = full[p0:p1, l0:l1].copy()
+                if src_alpha is not None:
+                    full_a = fit_whole_photo_in_box(src_alpha, h, w, box_cx, box_cy, p1 - p0, l1 - l0)
+                    src_alpha_patch = full_a[p0:p1, l0:l1]
+                else:
+                    src_alpha_patch = None
             else:
                 patch = src[p0:p1, l0:l1].copy()
+                src_alpha_patch = src_alpha[p0:p1, l0:l1] if src_alpha is not None else None
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[p0:p1, l0:l1]
-            if edge_feather > 0:
-                feather = make_feather_mask(p1 - p0, l1 - l0, edge_feather)
+            if edge_feather > 0 or src_alpha_patch is not None:
+                feather = make_feather_mask(p1 - p0, l1 - l0, edge_feather) if edge_feather > 0 else np.ones((p1 - p0, l1 - l0), dtype=np.float32)
                 alpha = (feather * opacity)[:, :, np.newaxis]
+                if src_alpha_patch is not None:
+                    alpha = alpha * src_alpha_patch
                 out[p0:p1, l0:l1] = blend_layer(base_patch, patch, alpha, mode)
             else:
                 out[p0:p1, l0:l1] = blend_patch(base_patch, patch, mode, opacity)
 
-    def _paste_v(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False, edge_feather=0.0):
+    def _paste_v(src, p0, p1, l0, l1, chroma_amt, mode, opacity, full_fit=False, edge_feather=0.0, src_alpha=None):
         if p1 > p0 and l1 > l0:
             if full_fit:
                 box_cx, box_cy = (p0 + p1) // 2, (l0 + l1) // 2
                 full = fit_whole_photo_in_box(src, h, w, box_cx, box_cy, l1 - l0, p1 - p0)
                 patch = full[l0:l1, p0:p1].copy()
+                if src_alpha is not None:
+                    full_a = fit_whole_photo_in_box(src_alpha, h, w, box_cx, box_cy, l1 - l0, p1 - p0)
+                    src_alpha_patch = full_a[l0:l1, p0:p1]
+                else:
+                    src_alpha_patch = None
             else:
                 patch = src[l0:l1, p0:p1].copy()
+                src_alpha_patch = src_alpha[l0:l1, p0:p1] if src_alpha is not None else None
             if stripe_chroma and chroma_amt > 0:
                 patch = apply_chroma(patch, chroma_amt)
             base_patch = out[l0:l1, p0:p1]
-            if edge_feather > 0:
-                feather = make_feather_mask(l1 - l0, p1 - p0, edge_feather)
+            if edge_feather > 0 or src_alpha_patch is not None:
+                feather = make_feather_mask(l1 - l0, p1 - p0, edge_feather) if edge_feather > 0 else np.ones((l1 - l0, p1 - p0), dtype=np.float32)
                 alpha = (feather * opacity)[:, :, np.newaxis]
+                if src_alpha_patch is not None:
+                    alpha = alpha * src_alpha_patch
                 out[l0:l1, p0:p1] = blend_layer(base_patch, patch, alpha, mode)
             else:
                 out[l0:l1, p0:p1] = blend_patch(base_patch, patch, mode, opacity)
 
-    def _draw(s, offset, is_h, src):
+    def _draw(s, offset, is_h, src, src_alpha=None):
         if flash_active:
             return  # striscia spenta sul beat
         center   = kf_get(s, 'center', t, total_dur, s.get('center', 50))
@@ -857,9 +895,9 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         dim = (h, w) if is_h else (w, h)
         p0, p1, l0, l1 = compute_stripe_coords(center, size, base_len, length_offset, dim)
         if is_h:
-            _paste_h(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit, edge_feather)
+            _paste_h(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit, edge_feather, src_alpha)
         else:
-            _paste_v(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit, edge_feather)
+            _paste_v(src, p0, p1, l0, l1, chroma_amt, blend_mode, opacity, full_fit, edge_feather, src_alpha)
 
     for idx, s in enumerate(stripes):
         if flash_active:
@@ -874,8 +912,13 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
         _src_geo_map = (stripe_glitch_sources or {}).get(_s_source)
         if stripe_glitch and _s_geo != "Uguale al Calderone" and _src_geo_map and _s_geo in _src_geo_map:
             this_src = _src_geo_map[_s_geo]
+            # la geometria glitchata rimescola i pixel (roll/shift): l'alpha originale
+            # non e' piu' allineata pixel-per-pixel col colore, quindi qui si resta
+            # opachi invece di comporre una trasparenza ormai fuori sincrono.
+            this_alpha = None
         else:
             this_src = sources.get(_s_source, src_stripe)
+            this_alpha = alpha_sources.get(_s_source)
 
         if s_orient == "Lancetta":
             # angolo base + rotazione automatica nel tempo (offset usato come angolo corrente)
@@ -893,7 +936,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                           angle, length_pct,
                           int(kf_get(s, 'size', t, total_dur, s.get('size', 10))),
                           chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False),
-                          float(s.get('edge_feather', 0.0)))
+                          float(s.get('edge_feather', 0.0)), this_alpha)
 
         elif s_orient == "Cerchio":
             radius = kf_get(s, 'radius', t, total_dur, s.get('radius', 30.0))
@@ -909,7 +952,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                          radius, s.get('filled', True),
                          int(kf_get(s, 'size', t, total_dur, s.get('size', 8))),
                          chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False),
-                         float(s.get('edge_feather', 0.0)))
+                         float(s.get('edge_feather', 0.0)), this_alpha)
 
         elif s_orient == "Striscia Ruotata":
             angle_base = kf_get(s, 'angle', t, total_dur, s.get('angle', 0.0))
@@ -927,10 +970,10 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                                   float(kf_get(s, 'size', t, total_dur, s.get('size', 15.0))),
                                   length_pct,
                                   chroma_on, chroma_amt, mode, opacity, s.get('full_fit', False),
-                                  float(s.get('edge_feather', 0.0)))
+                                  float(s.get('edge_feather', 0.0)), this_alpha)
 
         elif s_orient in ("Orizzontale", "Verticale"):
-            _draw(s, offset, s_orient == "Orizzontale", this_src)
+            _draw(s, offset, s_orient == "Orizzontale", this_src, this_alpha)
 
     return out
 
@@ -1143,6 +1186,16 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         f.seek(0)
         return resize_to_format(np.array(Image.open(f).convert("RGB")), format_type, half_res=True,
                                  pan_x=pan_x, pan_y=pan_y, zoom=zoom)
+    def load_img_half_alpha(f, pan_x=0.5, pan_y=0.5, zoom=1.0):
+        """Come load_img_half ma preserva il canale alpha del PNG (se presente) invece
+        di scartarlo con convert('RGB'). Ritorna (rgb, alpha) — alpha come float 0-1,
+        shape (h,w,1), tutto a 1.0 per JPG o PNG senza trasparenza."""
+        f.seek(0)
+        rgba = np.array(Image.open(f).convert("RGBA"))
+        resized = resize_to_format(rgba, format_type, half_res=True, pan_x=pan_x, pan_y=pan_y, zoom=zoom)
+        rgb = resized[:, :, :3]
+        alpha = (resized[:, :, 3:4].astype(np.float32)) / 255.0
+        return rgb, alpha
 
     _c1_pan_x = (calderone1_cfg or {}).get('pan_x', 0.5)
     _c1_pan_y = (calderone1_cfg or {}).get('pan_y', 0.5)
@@ -1161,6 +1214,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
     MAX_CACHE = 400  # definito qui: usato sia da cache_set2 (sotto) sia da cache_set (più avanti)
 
     pool_imgs2 = []
+    pool_alphas2 = []  # parallela a pool_imgs2 (stesso indice): alpha PNG per-pixel, usata
+                        # solo dalle strisce con source='Calderone 2' esplicito (pick2/_extra_alpha)
     calderone2_mix_from = 0.5
     if calderone2_cfg:
         _c2_files = calderone2_cfg.get('files') or []
@@ -1168,7 +1223,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             _c2_pan_x = calderone2_cfg.get('pan_x', 0.5)
             _c2_pan_y = calderone2_cfg.get('pan_y', 0.5)
             _c2_zoom  = calderone2_cfg.get('zoom', 1.0)
-            pool_imgs2 = [load_img_half(f, _c2_pan_x, _c2_pan_y, _c2_zoom) for f in _c2_files]
+            _c2_pairs = [load_img_half_alpha(f, _c2_pan_x, _c2_pan_y, _c2_zoom) for f in _c2_files]
+            pool_imgs2 = [p[0] for p in _c2_pairs]
+            pool_alphas2 = [p[1] for p in _c2_pairs]
             calderone2_mix_from = calderone2_cfg.get('mix_from', 0.5)
 
     def pick_calderone_pool(prog):
@@ -1208,22 +1265,24 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         stesso 'force' da beat quando 'segui il ritmo' è attivo.
         Memoizzata per singolo frame: se richiamata più volte con lo stesso cur_f (es.
         striscia con source='Calderone 2' + split statico attivi insieme), restituisce
-        sempre la stessa foto invece di rischiare un doppio ripescaggio jitter."""
+        sempre la stessa foto invece di rischiare un doppio ripescaggio jitter.
+        Ritorna (rgb, alpha): alpha e' il canale di trasparenza PNG per-pixel di QUELLA
+        foto (indice allineato tra pool_imgs2 e pool_alphas2), None se il pool e' vuoto."""
         if _pick2_frame_memo['f'] == cur_f:
             return _pick2_frame_memo['val']
         if not pool_imgs2:
-            res = pool_imgs[0]
+            res = (pool_imgs[0], None)
         else:
             _speed2 = (calderone2_cfg or {}).get('speed', photo_speed)
             interval = max(1, int(fps / _speed2))
             key = cur_f // interval
             force = beat_sync and onset_envelope[cur_f] > 0 and random.random() < (bc / 100.0) * onset_envelope[cur_f]
             if key in cached_picks2 and not force:
-                res = cached_picks2[key]
+                idx = cached_picks2[key]
             else:
-                idx = (key % len(pool_imgs2)) if seq_mode else None
-                res = pool_imgs2[idx] if seq_mode else random.choice(pool_imgs2)
-                cache_set2(key, res)
+                idx = (key % len(pool_imgs2)) if seq_mode else random.randrange(len(pool_imgs2))
+                cache_set2(key, idx)
+            res = (pool_imgs2[idx], pool_alphas2[idx])
         _pick2_frame_memo['f'] = cur_f
         _pick2_frame_memo['val'] = res
         return res
@@ -1769,8 +1828,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     else:
                         _bg = stripe_bg_static if stripe_bg_static is not None else pick()
                     _extra_src = {}
+                    _extra_alpha = {}
                     if pool_imgs2 and any(s.get('source') == 'Calderone 2' for s in stripes):
-                        _extra_src['Calderone 2'] = pick2(f)
+                        _extra_src['Calderone 2'], _extra_alpha['Calderone 2'] = pick2(f)
                     if bg_static_frame is not None and any(s.get('source') == 'Foto Fissa' for s in stripes):
                         _extra_src['Foto Fissa'] = get_photo_bg_frame()
                     if bg_video_cap is not None and any(s.get('source') == 'Video' for s in stripes):
@@ -1797,7 +1857,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
                                             opacity_mod_val=_modv,
                                             extra_sources=(_extra_src or None),
-                                            stripe_glitch_sources=_ne_stripe_glitch_sources),
+                                            stripe_glitch_sources=_ne_stripe_glitch_sources,
+                                            extra_alpha_sources=(_extra_alpha or None)),
                         f, t)
                 return _finalize(_custom_bg if _custom_bg is not None else pick(), f, t)
 
@@ -1867,8 +1928,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 else:
                     _bg = stripe_bg_static if stripe_bg_static is not None else pick()
                 _extra_src = {}
+                _extra_alpha = {}
                 if pool_imgs2 and any(s.get('source') == 'Calderone 2' for s in stripes):
-                    _extra_src['Calderone 2'] = pick2(f)
+                    _extra_src['Calderone 2'], _extra_alpha['Calderone 2'] = pick2(f)
                 if bg_static_frame is not None and any(s.get('source') == 'Foto Fissa' for s in stripes):
                     _extra_src['Foto Fissa'] = get_photo_bg_frame()
                 if bg_video_cap is not None and any(s.get('source') == 'Video' for s in stripes):
@@ -1892,7 +1954,8 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             t=t, total_dur=max_limit, beat_sync_on=(beat_sync and up_aud is not None),
                                             opacity_mod_val=_modv,
                                             extra_sources=(_extra_src or None),
-                                            stripe_glitch_sources=stripe_glitch_sources)
+                                            stripe_glitch_sources=stripe_glitch_sources,
+                                            extra_alpha_sources=(_extra_alpha or None))
             elif _custom_bg is not None:
                 # niente strisce ma sfondo custom impostato: il frame finale è lo sfondo, non il Calderone
                 frame = _custom_bg
