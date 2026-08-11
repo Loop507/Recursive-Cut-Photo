@@ -1556,7 +1556,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         rh, rw = raw_frame.shape[:2]
         pct = (calderone_split_traj[f] / 100.0) if calderone_split_traj is not None \
               else calderone2_cfg.get('split_pct', 0.5)
-        img2 = pick2(f)
+        img2, _img2_alpha = pick2(f)  # pick2() ritorna (rgb, alpha): serve solo l'rgb per il cover_crop
         out = raw_frame.copy()
 
         def _maybe_glitch(patch, ph, pw):
