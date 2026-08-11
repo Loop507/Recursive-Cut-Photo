@@ -561,6 +561,11 @@ def fit_whole_photo_in_box(src, canvas_h, canvas_w, box_cx, box_cy, box_h, box_w
     box_w = max(1, int(box_w))
     fitted = cover_crop(src, box_w, box_h)
     fitted = cv2.resize(fitted, (box_w, box_h))
+    # cv2.resize scarta la terza dimensione quando è un canale singolo (h,w,1) -> (h,w):
+    # per una mappa alpha questo fa perdere la forma attesa più avanti (broadcasting con
+    # shape (H,W,1)), causando un ValueError quando H != W. La ripristino qui.
+    if src.ndim == 3 and fitted.ndim == 2:
+        fitted = fitted[:, :, np.newaxis]
 
     # Canale-agnostico: funziona sia per patch RGB (h,w,3) sia per una singola
     # mappa alpha (h,w) o (h,w,1), cosi' la stessa funzione puo' "fittare nel box"
