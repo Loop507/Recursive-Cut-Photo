@@ -314,6 +314,16 @@ def blend_patch(base, top, mode, opacity):
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
+def _fmt_dims_for_preview(fmt_value):
+    """Dimensioni (larghezza, altezza) di riferimento per l'anteprima in base al formato
+    output scelto — condivisa tra il riquadro Anteprima principale e l'anteprima dedicata
+    pan/zoom del Calderone 2, così restano sempre coerenti tra loro."""
+    _dims = {"16:9 (Orizzontale)": (1280, 720),
+             "9:16 (Verticale)":  (720, 1280),
+             "1:1 (Quadrato)":    (1080, 1080)}
+    return _dims.get(fmt_value, (1280, 720))
+
+
 def cover_crop(img_rgba, target_w, target_h, pan_x=0.5, pan_y=0.5, zoom=1.0):
     """Ritaglia (center-crop, o pan/zoom se specificati) l'immagine per adattarla
     all'aspect ratio del canvas — stessa logica di resize_to_format usata dal
@@ -2742,6 +2752,24 @@ with bottom_container:
                 calderone2_cfg['pan_y'] = st.slider("Posizione Y (%)", 0, 100, 50, key="c2_pan_y") / 100.0
                 calderone2_cfg['zoom'] = st.slider("Zoom", 1.0, 3.0, 1.0, step=0.05, key="c2_zoom")
 
+                # Anteprima dedicata: sempre visibile (indipendente dallo split statico), così il
+                # pan/zoom del Calderone 2 si vede subito senza dover attivare lo split per testarlo.
+                _c2_pz_files = calderone2_cfg.get('files') or []
+                if _c2_pz_files:
+                    _c2_pz_file = _c2_pz_files[0]
+                    _c2_pz_file.seek(0)
+                    _c2_pz_img = np.array(Image.open(_c2_pz_file).convert("RGB"))
+                    _c2_pz_fw, _c2_pz_fh = _fmt_dims_for_preview(fmt_value)
+                    _c2_pz_crop = cv2.resize(cover_crop(_c2_pz_img, _c2_pz_fw, _c2_pz_fh,
+                        calderone2_cfg['pan_x'], calderone2_cfg['pan_y'], calderone2_cfg['zoom']),
+                        (_c2_pz_fw, _c2_pz_fh))
+                    _c2_pz_scale = 190 / max(_c2_pz_fh, _c2_pz_fw)
+                    _c2_pz_dw, _c2_pz_dh = int(_c2_pz_fw * _c2_pz_scale), int(_c2_pz_fh * _c2_pz_scale)
+                    st.image(cv2.resize(_c2_pz_crop, (_c2_pz_dw, _c2_pz_dh)),
+                        caption="Anteprima inquadratura Calderone 2", width=_c2_pz_dw)
+                else:
+                    st.caption("Carica almeno una foto per il Calderone 2 per vedere l'anteprima.")
+
     with preview_slot:
         st.caption("🔍 Anteprima")
 
@@ -2786,10 +2814,7 @@ with bottom_container:
 
         if prev_img_full is not None:
 
-            _fmt_dims = {"16:9 (Orizzontale)": (1280, 720),
-                         "9:16 (Verticale)":  (720, 1280),
-                         "1:1 (Quadrato)":    (1080, 1080)}
-            _fw, _fh = _fmt_dims.get(fmt_value, (1280, 720))
+            _fw, _fh = _fmt_dims_for_preview(fmt_value)
             st.caption(f"Formato: {fmt_value}")
             if prev_sel == "Prima foto Calderone":
                 prev_img_cropped = cv2.resize(cover_crop(prev_img_full, _fw, _fh,
