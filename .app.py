@@ -1581,6 +1581,13 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 return apply_glitch_stripes(patch, patch, ph, pw, orientation, strand_val, rand_lines, val2)
             return patch
 
+        c1_pan_x = calderone1_cfg.get('pan_x', 0.5) if calderone1_cfg else 0.5
+        c1_pan_y = calderone1_cfg.get('pan_y', 0.5) if calderone1_cfg else 0.5
+        c1_zoom  = calderone1_cfg.get('zoom', 1.0)  if calderone1_cfg else 1.0
+        c2_pan_x = calderone2_cfg.get('pan_x', 0.5)
+        c2_pan_y = calderone2_cfg.get('pan_y', 0.5)
+        c2_zoom  = calderone2_cfg.get('zoom', 1.0)
+
         if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)') == "Scacchiera (griglia)":
             rows = max(1, int(calderone2_cfg.get('split_grid_rows', 2)))
             cols = max(1, int(calderone2_cfg.get('split_grid_cols', 2)))
@@ -1602,30 +1609,35 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         continue
                     ph, pw = y1 - y0, x1 - x0
                     if (r + c + flip) % 2 == 1:  # scacchiera: solo le celle "dispari" vanno a Calderone 2
-                        patch = cv2.resize(cover_crop(img2, pw, ph), (pw, ph))
+                        patch = cv2.resize(cover_crop(img2, pw, ph, c2_pan_x, c2_pan_y, c2_zoom), (pw, ph))
                         out[y0:y1, x0:x1] = _maybe_glitch(patch, ph, pw)
                     elif grid_full:  # "griglia completa": anche le celle Calderone 1 tagliate a griglia
-                        patch1 = cv2.resize(cover_crop(raw_frame, pw, ph), (pw, ph))
+                        patch1 = cv2.resize(cover_crop(raw_frame, pw, ph, c1_pan_x, c1_pan_y, c1_zoom), (pw, ph))
                         out[y0:y1, x0:x1] = _maybe_glitch(patch1, ph, pw)
                     # altrimenti (grid_full spento): cella lasciata com'e' (Calderone 1 intero di sfondo)
         elif calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
             split_x = int(rw * pct)
+            # Calderone 1: ri-crop della SUA finestra dal frame già processato (tutti gli
+            # effetti/stripe restano intatti, si ricampiona solo la porzione visibile) con
+            # pan/zoom live — c'è margine anche se l'aspect ratio della foto coincide col
+            # canvas intero, perché la finestra (split_x × rh) ha quasi sempre un aspect
+            # ratio diverso dal canvas intero (rw × rh).
+            if split_x > 0:
+                patch1 = cv2.resize(cover_crop(raw_frame, split_x, rh, c1_pan_x, c1_pan_y, c1_zoom), (split_x, rh))
+                out[:, :split_x] = patch1
             if split_x < rw:
                 pw = rw - split_x
-                # Taglio dalla versione di Calderone 2 adattata all'INTERO canvas (stessa logica
-                # con cui raw_frame mostra gia' Calderone 1 sull'intero canvas), cosi' le due metà
-                # sono simmetriche: entrambe sono la rispettiva porzione della propria foto intera,
-                # invece di un cover-crop fresco calcolato solo sulla metà (che appariva "intera").
-                img2_full = cv2.resize(cover_crop(img2, rw, rh), (rw, rh))
-                patch = img2_full[:, split_x:rw]
-                out[:, split_x:rw] = _maybe_glitch(patch, rh, pw)
+                patch2 = cv2.resize(cover_crop(img2, pw, rh, c2_pan_x, c2_pan_y, c2_zoom), (pw, rh))
+                out[:, split_x:rw] = _maybe_glitch(patch2, rh, pw)
         else:
             split_y = int(rh * pct)
+            if split_y > 0:
+                patch1 = cv2.resize(cover_crop(raw_frame, rw, split_y, c1_pan_x, c1_pan_y, c1_zoom), (rw, split_y))
+                out[:split_y, :] = patch1
             if split_y < rh:
                 ph = rh - split_y
-                img2_full = cv2.resize(cover_crop(img2, rw, rh), (rw, rh))
-                patch = img2_full[split_y:rh, :]
-                out[split_y:rh, :] = _maybe_glitch(patch, ph, rw)
+                patch2 = cv2.resize(cover_crop(img2, rw, ph, c2_pan_x, c2_pan_y, c2_zoom), (rw, ph))
+                out[split_y:rh, :] = _maybe_glitch(patch2, ph, rw)
         return out
 
     def _finalize(raw_frame, f, t):
@@ -2769,6 +2781,23 @@ with bottom_container:
                 help="0 = tutto in alto, 50 = centrato, 100 = tutto in basso.") / 100.0
             calderone1_cfg['zoom'] = st.slider("Zoom", 1.0, 3.0, 1.0, step=0.05, key="c1_zoom",
                 help="1.0 = nessuno zoom (inquadratura piena). Più alto = più vicino.")
+
+            # Diagnostica: il cover-crop taglia SOLO in orizzontale (Posizione X) oppure
+            # SOLO in verticale (Posizione Y), mai entrambi — dipende dal rapporto tra
+            # l'aspect ratio della foto e quello del formato output, non dallo zoom.
+            # Questo avvisa subito quando uno slider non avrà alcun effetto visibile.
+            if up_t:
+                up_t[0].seek(0)
+                _c1_diag_img = Image.open(up_t[0])
+                _c1_diag_w, _c1_diag_h = _c1_diag_img.size
+                up_t[0].seek(0)
+                _c1_diag_tw, _c1_diag_th = _fmt_dims_for_preview(fmt_value)
+                if (_c1_diag_w / _c1_diag_h) > (_c1_diag_tw / _c1_diag_th):
+                    st.caption("↔️ Con questa foto e questo formato, il ritaglio avviene in "
+                               "orizzontale: solo **Posizione X** ha effetto (Posizione Y è ignorata).")
+                else:
+                    st.caption("↕️ Con questa foto e questo formato, il ritaglio avviene in "
+                               "verticale: solo **Posizione Y** ha effetto (Posizione X è ignorata).")
         if calderone2_on:
             with st.expander("Calderone 2", expanded=False):
                 calderone2_cfg['pan_x'] = st.slider("Posizione X (%)", 0, 100, 50, key="c2_pan_x") / 100.0
