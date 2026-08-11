@@ -1586,6 +1586,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             cols = max(1, int(calderone2_cfg.get('split_grid_cols', 2)))
             row_b = np.linspace(0, rh, rows + 1).astype(int)
             col_b = np.linspace(0, rw, cols + 1).astype(int)
+            grid_full = bool(calderone2_cfg.get('split_grid_full'))
             if calderone2_cfg.get('split_grid_move'):
                 _gspd = max(0.1, calderone2_cfg.get('split_grid_move_speed', 1.0))
                 _greact = bool(calderone2_cfg.get('split_grid_beat_react', False)) and beat_sync and not slideshow_mode
@@ -1595,24 +1596,35 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                 flip = 0
             for r in range(rows):
                 for c in range(cols):
+                    y0, y1 = row_b[r], row_b[r + 1]
+                    x0, x1 = col_b[c], col_b[c + 1]
+                    if y1 <= y0 or x1 <= x0:
+                        continue
+                    ph, pw = y1 - y0, x1 - x0
                     if (r + c + flip) % 2 == 1:  # scacchiera: solo le celle "dispari" vanno a Calderone 2
-                        y0, y1 = row_b[r], row_b[r + 1]
-                        x0, x1 = col_b[c], col_b[c + 1]
-                        if y1 > y0 and x1 > x0:
-                            ph, pw = y1 - y0, x1 - x0
-                            patch = cv2.resize(cover_crop(img2, pw, ph), (pw, ph))
-                            out[y0:y1, x0:x1] = _maybe_glitch(patch, ph, pw)
+                        patch = cv2.resize(cover_crop(img2, pw, ph), (pw, ph))
+                        out[y0:y1, x0:x1] = _maybe_glitch(patch, ph, pw)
+                    elif grid_full:  # "griglia completa": anche le celle Calderone 1 tagliate a griglia
+                        patch1 = cv2.resize(cover_crop(raw_frame, pw, ph), (pw, ph))
+                        out[y0:y1, x0:x1] = _maybe_glitch(patch1, ph, pw)
+                    # altrimenti (grid_full spento): cella lasciata com'e' (Calderone 1 intero di sfondo)
         elif calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
             split_x = int(rw * pct)
             if split_x < rw:
                 pw = rw - split_x
-                patch = cv2.resize(cover_crop(img2, pw, rh), (pw, rh))
+                # Taglio dalla versione di Calderone 2 adattata all'INTERO canvas (stessa logica
+                # con cui raw_frame mostra gia' Calderone 1 sull'intero canvas), cosi' le due metà
+                # sono simmetriche: entrambe sono la rispettiva porzione della propria foto intera,
+                # invece di un cover-crop fresco calcolato solo sulla metà (che appariva "intera").
+                img2_full = cv2.resize(cover_crop(img2, rw, rh), (rw, rh))
+                patch = img2_full[:, split_x:rw]
                 out[:, split_x:rw] = _maybe_glitch(patch, rh, pw)
         else:
             split_y = int(rh * pct)
             if split_y < rh:
                 ph = rh - split_y
-                patch = cv2.resize(cover_crop(img2, rw, ph), (rw, ph))
+                img2_full = cv2.resize(cover_crop(img2, rw, rh), (rw, rh))
+                patch = img2_full[split_y:rh, :]
                 out[split_y:rh, :] = _maybe_glitch(patch, ph, rw)
         return out
 
@@ -2161,7 +2173,7 @@ with c1:
              "dal punto che imposti sotto — stesso meccanismo di dissolvenza di Master 1/2.")
     calderone2_cfg = {'files': None, 'mix_from': 0.5, 'mix_enabled': False, 'speed': 6,
                        'split_on': False, 'split_orient': 'Verticale (sx/dx)', 'split_pct': 0.5,
-                       'split_grid_rows': 2, 'split_grid_cols': 2,
+                       'split_grid_rows': 2, 'split_grid_cols': 2, 'split_grid_full': False,
                        'split_grid_move': False, 'split_grid_move_speed': 1.0, 'split_grid_beat_react': False,
                        'split_move_random': False, 'split_move_speed': 1.0, 'split_beat_react': False,
                        'apply_glitch': False, 'pan_x': 0.5, 'pan_y': 0.5, 'zoom': 1.0}
@@ -2201,6 +2213,12 @@ with c1:
                     calderone2_cfg['split_grid_cols'] = st.slider("Colonne", 1, 10, 2, key="calderone2_grid_cols")
                 st.caption("Le celle si alternano Calderone 1 / Calderone 2 a scacchiera "
                            "(es. 2×2 = 4 celle, 3×5 = 15 celle).")
+                calderone2_cfg['split_grid_full'] = st.toggle("🔲 Griglia completa (dividi anche Calderone 1)",
+                    value=False, key="calderone2_grid_full",
+                    help="Spento (default): il Calderone 1 resta come sfondo intero dietro le celle "
+                         "del Calderone 2. Acceso: anche le celle 'Calderone 1' vengono tagliate a "
+                         "griglia (ognuna mostra la foto adattata a quella cella, come già fa il "
+                         "Calderone 2) — mosaico completo su entrambi.")
                 calderone2_cfg['split_grid_move'] = st.toggle("🔀 Movimento scacchiera", value=False,
                     key="calderone2_grid_move",
                     help="La scacchiera si inverte periodicamente nel tempo (le celle che mostrano "
