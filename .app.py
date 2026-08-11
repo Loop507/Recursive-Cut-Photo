@@ -2894,33 +2894,50 @@ with bottom_container:
                 _c2_px = calderone2_cfg.get('pan_x', 0.5)
                 _c2_py = calderone2_cfg.get('pan_y', 0.5)
                 _c2_z  = calderone2_cfg.get('zoom', 1.0)
+                _c1_px = calderone1_cfg.get('pan_x', 0.5)
+                _c1_py = calderone1_cfg.get('pan_y', 0.5)
+                _c1_z  = calderone1_cfg.get('zoom', 1.0)
+                # Immagine "intera" di Calderone 1 da cui pescare i ri-crop per finestra/cella:
+                # stessa logica del render reale (raw_frame = frame Calderone 1 già composto).
+                _c1_prev_full = preview_out.copy()
                 if calderone2_cfg.get('split_orient', 'Verticale (sx/dx)') == "Scacchiera (griglia)":
                     _g_rows = max(1, int(calderone2_cfg.get('split_grid_rows', 2)))
                     _g_cols = max(1, int(calderone2_cfg.get('split_grid_cols', 2)))
+                    _g_full = bool(calderone2_cfg.get('split_grid_full'))
                     _rb = np.linspace(0, pdh, _g_rows + 1).astype(int)
                     _cb = np.linspace(0, pdw, _g_cols + 1).astype(int)
                     for _r in range(_g_rows):
                         for _c in range(_g_cols):
+                            _y0, _y1 = _rb[_r], _rb[_r + 1]
+                            _x0, _x1 = _cb[_c], _cb[_c + 1]
+                            if _y1 <= _y0 or _x1 <= _x0:
+                                continue
                             if (_r + _c) % 2 == 1:
-                                _y0, _y1 = _rb[_r], _rb[_r + 1]
-                                _x0, _x1 = _cb[_c], _cb[_c + 1]
-                                if _y1 > _y0 and _x1 > _x0:
-                                    _gp = cv2.resize(cover_crop(_c2_prev_img, _x1 - _x0, _y1 - _y0, _c2_px, _c2_py, _c2_z), (_x1 - _x0, _y1 - _y0))
-                                    preview_out[_y0:_y1, _x0:_x1] = _gp
+                                _gp = cv2.resize(cover_crop(_c2_prev_img, _x1 - _x0, _y1 - _y0, _c2_px, _c2_py, _c2_z), (_x1 - _x0, _y1 - _y0))
+                                preview_out[_y0:_y1, _x0:_x1] = _gp
+                            elif _g_full:
+                                _gp1 = cv2.resize(cover_crop(_c1_prev_full, _x1 - _x0, _y1 - _y0, _c1_px, _c1_py, _c1_z), (_x1 - _x0, _y1 - _y0))
+                                preview_out[_y0:_y1, _x0:_x1] = _gp1
                     for _r in range(1, _g_rows):
                         preview_out[max(0, _rb[_r]-1):_rb[_r]+1, :] = [255, 220, 0]
                     for _c in range(1, _g_cols):
                         preview_out[:, max(0, _cb[_c]-1):_cb[_c]+1] = [255, 220, 0]
                 elif calderone2_cfg.get('split_orient', 'Verticale (sx/dx)').startswith('Verticale'):
                     _sx = int(pdw * _pct)
-                    if 0 < _sx < pdw:
+                    if _sx > 0:
+                        _patch1 = cv2.resize(cover_crop(_c1_prev_full, _sx, pdh, _c1_px, _c1_py, _c1_z), (_sx, pdh))
+                        preview_out[:, :_sx] = _patch1
+                    if _sx < pdw:
                         _pw2 = pdw - _sx
                         _patch2 = cv2.resize(cover_crop(_c2_prev_img, _pw2, pdh, _c2_px, _c2_py, _c2_z), (_pw2, pdh))
                         preview_out[:, _sx:pdw] = _patch2
                         preview_out[:, max(0, _sx - 1):_sx + 1] = [255, 220, 0]
                 else:
                     _sy = int(pdh * _pct)
-                    if 0 < _sy < pdh:
+                    if _sy > 0:
+                        _patch1 = cv2.resize(cover_crop(_c1_prev_full, pdw, _sy, _c1_px, _c1_py, _c1_z), (pdw, _sy))
+                        preview_out[:_sy, :] = _patch1
+                    if _sy < pdh:
                         _ph2 = pdh - _sy
                         _patch2 = cv2.resize(cover_crop(_c2_prev_img, pdw, _ph2, _c2_px, _c2_py, _c2_z), (pdw, _ph2))
                         preview_out[_sy:pdh, :] = _patch2
