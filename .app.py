@@ -551,16 +551,18 @@ def make_feather_mask(h, w, feather_pct):
 
 def fit_whole_photo_in_box(src, canvas_h, canvas_w, box_cx, box_cy, box_h, box_w):
     """
-    Adatta l'INTERA immagine 'src' (ritaglio 'cover', centrato) dentro un riquadro di
-    box_h x box_w, posizionato con centro in (box_cx, box_cy) sul canvas canvas_h x
-    canvas_w. Ritorna una patch grande quanto il canvas, con la foto SOLO dentro quel
-    riquadro (il resto nero) — da usare insieme alla maschera della forma, così la
-    forma mostra la foto intera adattata invece di un frammento della stessa posizione.
+    Adatta l'INTERA immagine 'src' dentro un riquadro di box_h x box_w, posizionato
+    con centro in (box_cx, box_cy) sul canvas canvas_h x canvas_w — ridimensionamento
+    esatto (stretch) alle misure del box, senza ritagliare nulla e senza barre vuote:
+    se le proporzioni non combaciano la foto viene leggermente deformata pur di
+    riempire esattamente lo spazio deciso. Ritorna una patch grande quanto il canvas,
+    con la foto SOLO dentro quel riquadro (il resto nero) — da usare insieme alla
+    maschera della forma, così la forma mostra la foto intera adattata invece di un
+    frammento della stessa posizione.
     """
     box_h = max(1, int(box_h))
     box_w = max(1, int(box_w))
-    fitted = cover_crop(src, box_w, box_h)
-    fitted = cv2.resize(fitted, (box_w, box_h))
+    fitted = cv2.resize(src, (box_w, box_h))
     # cv2.resize scarta la terza dimensione quando è un canale singolo (h,w,1) -> (h,w):
     # per una mappa alpha questo fa perdere la forma attesa più avanti (broadcasting con
     # shape (H,W,1)), causando un ValueError quando H != W. La ripristino qui.
@@ -799,7 +801,7 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                         beat_val=0.0, beat_gate_val=0.0, beat_sync_on=False,
                         t=0.0, total_dur=10.0, extra_sources=None,
                         opacity_mod_val=0.0, stripe_glitch_sources=None,
-                        extra_alpha_sources=None, calder_alpha=None):
+                        extra_alpha_sources=None):
     """
     stripes: lista di dict con keys: center, size, length, length_audio,
              move_random, move_speed, offset_length, chroma_amount,
@@ -816,11 +818,6 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
                     per-pixel del PNG originale di quella sorgente (es. 'Calderone 2'), usato
                     per far vedere cosa c'e' sotto nelle zone trasparenti della foto invece di
                     trattarla come sempre opaca. Sorgenti assenti dal dict = opache (come prima).
-    calder_alpha:   alpha PNG (h,w,1) della foto corrente del Calderone 1 (calder_clean),
-                    stesso trattamento di extra_alpha_sources ma per la sorgente 'Calderone'.
-                    Applicata SOLO quando la sorgente 'Calderone' corrisponde davvero a
-                    calder_clean (non reverse, non sostituita da un frame glitchato misto:
-                    in quel caso l'alpha non sarebbe piu' allineata pixel-per-pixel).
     """
     if stripe_offsets is None:
         stripe_offsets = [50.0] * len(stripes)
@@ -839,12 +836,6 @@ def apply_stripe_window(bg_frame, calder_clean, calder_glitch, h, w,
 
     sources = {'Calderone': src_stripe}
     alpha_sources = dict(extra_alpha_sources) if extra_alpha_sources else {}
-    # Trasparenza PNG del Calderone 1: valida solo se la sorgente 'Calderone' e' davvero
-    # calder_clean (stesso identico array) — se stripe_reverse la sorgente e' bg_frame,
-    # se e' stato scelto un frame glitchato misto (piu' foto ricombinate) l'alpha originale
-    # non e' piu' allineata pixel-per-pixel, quindi in quei casi si resta opachi come prima.
-    if calder_alpha is not None and not stripe_reverse and src_calder is calder_clean:
-        alpha_sources['Calderone'] = calder_alpha
     if extra_sources:
         sources.update(extra_sources)
 
@@ -1229,14 +1220,9 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     img_m1 = load_img_full(up_m1) if up_m1 else None
     img_m2 = load_img_full(up_m2) if up_m2 else None
-    _c1_pairs = [load_img_half_alpha(f, _c1_pan_x, _c1_pan_y, _c1_zoom) for f in up_trit] if up_trit else []
-    pool_imgs = [p[0] for p in _c1_pairs]
-    pool_alphas = [p[1] for p in _c1_pairs]  # parallela a pool_imgs (stesso indice): alpha PNG
-                                              # per-pixel del Calderone 1, stesso trattamento del
-                                              # Calderone 2 (vedi pool_alphas2 piu' sotto)
+    pool_imgs = [load_img_half(f, _c1_pan_x, _c1_pan_y, _c1_zoom) for f in up_trit] if up_trit else []
     if not pool_imgs:
         pool_imgs = [np.zeros((360, 640, 3), dtype=np.uint8)]
-        pool_alphas = [None]
 
     h, w = pool_imgs[0].shape[:2]
 
@@ -1272,14 +1258,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
         span = max(1.0 - calderone2_mix_from, 1e-6)
         ramp = np.clip((prog - calderone2_mix_from) / span, 0.0, 1.0)
         return pool_imgs2 if random.random() < ramp else pool_imgs
-
-    def pick_calderone_alpha_pool(active_pool):
-        """Ritorna il pool di alpha (parallelo per indice) corrispondente al pool di
-        immagini 'active_pool' appena scelto da pick_calderone_pool — pool_alphas per
-        il Calderone 1, pool_alphas2 per il Calderone 2. Va chiamata con lo STESSO
-        oggetto ritornato da pick_calderone_pool (non richiamare pick_calderone_pool
-        una seconda volta: rifarebbe un'estrazione random diversa)."""
-        return pool_alphas2 if active_pool is pool_imgs2 else pool_alphas
 
     # Cache dedicata al Calderone 2, con la STESSA identica logica di jitter/beat-sync
     # di cache_set/cached_picks usate da pick() più avanti — cosi' le due pentole
@@ -1539,24 +1517,15 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
 
     # --- CACHE ---
     cached_picks = {}
-    cached_picks_alpha = {}  # parallela a cached_picks (stessa key): alpha PNG del Calderone 1
-                              # associata alla foto scelta in quel pick, None se opaca/master
     cache_keys_order = []
 
-    def cache_set(key, val, alpha=None):
+    def cache_set(key, val):
         if key not in cached_picks:
             if len(cache_keys_order) >= MAX_CACHE:
                 old = cache_keys_order.pop(0)
                 cached_picks.pop(old, None)
-                cached_picks_alpha.pop(old, None)
             cache_keys_order.append(key)
         cached_picks[key] = val
-        cached_picks_alpha[key] = alpha
-
-    # Ultima alpha PNG (Calderone 1) associata all'ultimo pick() eseguito — usata per
-    # threadare la trasparenza PNG nello stripe overlay quando source='Calderone', con
-    # lo stesso meccanismo già in uso per il Calderone 2 (pool_alphas2/pick2).
-    _last_calder_alpha = [None]
 
     # --- POWER CURVE ---
     c_n = chaos_val / 100.0
@@ -1815,19 +1784,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
                         if key in cached_picks:
-                            _last_calder_alpha[0] = cached_picks_alpha.get(key)
                             return cached_picks[key]
                         if random.random() < _m1_prob:
                             res = img_m1_half
-                            alpha_val = None
                         else:
                             _active_pool = pick_calderone_pool(prog)
-                            _active_alpha_pool = pick_calderone_alpha_pool(_active_pool)
-                            idx = (key % len(_active_pool)) if seq_mode else random.randrange(len(_active_pool))
-                            res = _active_pool[idx]
-                            alpha_val = _active_alpha_pool[idx] if idx < len(_active_alpha_pool) else None
-                        cache_set(key, res, alpha_val)
-                        _last_calder_alpha[0] = alpha_val
+                            idx = (key % len(_active_pool)) if seq_mode else None
+                            res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
+                        cache_set(key, res)
                         return res
                 elif prog >= m2_start:
                     _span_m2 = 1.0 - m2_start if m2_start < 0.999 else 1e-6
@@ -1838,19 +1802,14 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     def pick():
                         key = f // max(1, int(fps / photo_speed))
                         if key in cached_picks:
-                            _last_calder_alpha[0] = cached_picks_alpha.get(key)
                             return cached_picks[key]
                         if random.random() < _m2_prob:
                             res = img_m2_half
-                            alpha_val = None
                         else:
                             _active_pool = pick_calderone_pool(prog)
-                            _active_alpha_pool = pick_calderone_alpha_pool(_active_pool)
-                            idx = (key % len(_active_pool)) if seq_mode else random.randrange(len(_active_pool))
-                            res = _active_pool[idx]
-                            alpha_val = _active_alpha_pool[idx] if idx < len(_active_alpha_pool) else None
-                        cache_set(key, res, alpha_val)
-                        _last_calder_alpha[0] = alpha_val
+                            idx = (key % len(_active_pool)) if seq_mode else None
+                            res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
+                        cache_set(key, res)
                         return res
                 else:
                     def pick():
@@ -1858,15 +1817,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                         key = f // interval
                         force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
                         if key in cached_picks and not force:
-                            _last_calder_alpha[0] = cached_picks_alpha.get(key)
                             return cached_picks[key]
                         _active_pool = pick_calderone_pool(prog)
-                        _active_alpha_pool = pick_calderone_alpha_pool(_active_pool)
-                        idx = (key % len(_active_pool)) if seq_mode else random.randrange(len(_active_pool))
-                        res = _active_pool[idx]
-                        alpha_val = _active_alpha_pool[idx] if idx < len(_active_alpha_pool) else None
-                        cache_set(key, res, alpha_val)
-                        _last_calder_alpha[0] = alpha_val
+                        idx = (key % len(_active_pool)) if seq_mode else None
+                        res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
+                        cache_set(key, res)
                         return res
             else:
                 def pick():
@@ -1878,15 +1833,11 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                     key = f // interval
                     force = beat_sync and onset_envelope[f] > 0 and random.random() < (bc / 100.0) * onset_envelope[f]
                     if key in cached_picks and not force:
-                        _last_calder_alpha[0] = cached_picks_alpha.get(key)
                         return cached_picks[key]
                     _active_pool = pick_calderone_pool(prog)
-                    _active_alpha_pool = pick_calderone_alpha_pool(_active_pool)
-                    idx = (key % len(_active_pool)) if seq_mode else random.randrange(len(_active_pool))
-                    res = _active_pool[idx]
-                    alpha_val = _active_alpha_pool[idx] if idx < len(_active_alpha_pool) else None
-                    cache_set(key, res, alpha_val)
-                    _last_calder_alpha[0] = alpha_val
+                    idx = (key % len(_active_pool)) if seq_mode else None
+                    res = _active_pool[idx] if seq_mode else random.choice(_active_pool)
+                    cache_set(key, res)
                     return res
 
             val = compute_glitch_val(f, prog)
@@ -1910,7 +1861,6 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
             if orientation == "Nessun Effetto":
                 if stripe_mode and stripes:
                     calder_clean = pick()
-                    calder_clean_alpha = _last_calder_alpha[0]
                     if _custom_bg is not None:
                         _bg = _custom_bg
                     elif stripe_use_render:
@@ -1949,14 +1899,12 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             opacity_mod_val=_modv,
                                             extra_sources=(_extra_src or None),
                                             stripe_glitch_sources=_ne_stripe_glitch_sources,
-                                            extra_alpha_sources=(_extra_alpha or None),
-                                            calder_alpha=calder_clean_alpha),
+                                            extra_alpha_sources=(_extra_alpha or None)),
                         f, t)
                 return _finalize(_custom_bg if _custom_bg is not None else pick(), f, t)
 
             # --- Calderone corrente (foto pulita, per la striscia originale) ---
             calder_clean = pick()
-            calder_clean_alpha = _last_calder_alpha[0]
 
             frame = np.zeros((h, w, 3), dtype=np.uint8)
 
@@ -2048,8 +1996,7 @@ def generate_master(up_m1, up_m2, up_trit, up_aud,
                                             opacity_mod_val=_modv,
                                             extra_sources=(_extra_src or None),
                                             stripe_glitch_sources=stripe_glitch_sources,
-                                            extra_alpha_sources=(_extra_alpha or None),
-                                            calder_alpha=calder_clean_alpha)
+                                            extra_alpha_sources=(_extra_alpha or None))
             elif _custom_bg is not None:
                 # niente strisce ma sfondo custom impostato: il frame finale è lo sfondo, non il Calderone
                 frame = _custom_bg
